@@ -2,15 +2,16 @@
 
 > ## 🖥️ 本仓库是带 WebUI 控制台的容器版
 >
-> 在原版基础上增加了浏览器管理界面：**不动代码、不改配置文件格式**，网页里就能增删主播、
+> 在原版基础上增加了浏览器管理界面：**不改配置文件格式**，网页里就能增删主播、
 > 单独控制每个主播是否录制 / 是否推送、以及编辑全部设置项（录制、推送、Cookie、账号）。
+> 本仓库只提供容器运行方式，需要直接跑源码请参考[上游仓库](https://github.com/ihmily/DouyinLiveRecorder)。
 >
 > ```bash
-> docker compose up -d --build     # 或 docker compose up -d（使用已构建镜像）
+> docker compose up -d          # 首次会自动构建镜像
 > # 打开 http://localhost:8000
 > ```
 >
-> 详细说明见 **[WEBUI.md](WEBUI.md)**。原版功能与用法见下方官方文档。
+> 详细说明见 **[WEBUI.md](WEBUI.md)**，容器参数详解见下方「容器运行」章节。
 
 ## 💡简介
 [![Python Version](https://img.shields.io/badge/python-3.11.6-blue.svg)](https://www.python.org/downloads/release/python-3116/)
@@ -85,33 +86,36 @@
 
 ```
 .
-└── DouyinLiveRecorder/
-    ├── /config -> (config record)
-    ├── /logs -> (save runing log file)
-    ├── /backup_config -> (backup file)
-    ├── /douyinliverecorder -> (package)
-        ├── initializer.py-> (check and install nodejs)
-    	├── spider.py-> (get live data)
-    	├── stream.py-> (get live stream address)
-    	├── utils.py -> (contains utility functions)
-    	├── logger.py -> (logger handdle)
-    	├── room.py -> (get room info)
-    	├── ab_sign.py-> (generate dy token)
-    	├── /javascript -> (some decrypt code)
-    ├── main.py -> (main file)
-    ├── ffmpeg_install.py -> (ffmpeg install script)
-    ├── demo.py -> (call package test demo)
-    ├── msg_push.py -> (send live status update message)
-    ├── ffmpeg.exe -> (record video)
-    ├── index.html -> (play m3u8 and flv video)
-    ├── requirements.txt -> (library dependencies)
-    ├── docker-compose.yaml -> (Container Orchestration File)
-    ├── Dockerfile -> (Application Build Recipe)
-    ├── StopRecording.vbs -> (stop recording script on Windows)
-    ...
+├── main.py                      # 录制主程序（轮询、调度、调用 ffmpeg）
+├── src/                         # 直播数据获取与流解析
+│   ├── spider.py                # 抓取直播间信息与直播源
+│   ├── stream.py                # 解析直播流地址
+│   ├── room.py                  # 房间信息
+│   ├── proxy.py                 # 代理检测
+│   ├── javascript/              # 部分平台的签名 / 解密脚本
+│   └── ...
+├── webui/                       # WebUI（本仓库新增）
+│   ├── app.py                   # FastAPI 接口
+│   ├── anchors.py               # 主播列表增删改与录制开关
+│   ├── schema.py                # 设置项元数据
+│   ├── config_io.py             # config.ini 无损读写
+│   ├── runtime.py / bridge.py   # 运行时状态与进程间桥接
+│   └── static/                  # 前端单页 index.html / app.js / style.css
+├── docker/
+│   ├── entrypoint.sh            # 容器入口：初始化目录并启动 supervisor
+│   └── supervisord.conf         # 托管 recorder 与 webui 两个进程
+├── config/                      # config.ini、URL_config.ini、webui_state.json
+├── downloads/                   # 录像输出
+├── logs/                        # 运行日志
+├── backup_config/               # 配置自动备份
+├── msg_push.py                  # 开播 / 关播消息推送
+├── Dockerfile
+├── docker-compose.yml           # 通用容器编排
+├── docker-compose.ugreen.yml    # NAS 部署配置
+├── WEBUI.md                     # WebUI 功能与部署文档
+└── requirements.txt / requirements-webui.txt
 ```
 
-</div>
 
 ## 🌱使用说明
 
@@ -298,198 +302,127 @@ https://www.picarto.tv/cuteavalanche
 
 &emsp;
 
-## 🎃源码运行
-使用源码运行，可参考下面的步骤。
-
-1.首先拉取或手动下载本仓库项目代码
-
-```bash
-git clone https://github.com/ihmily/DouyinLiveRecorder.git
-```
-
-2.进入项目文件夹，安装依赖
-
-```bash
-cd DouyinLiveRecorder
-```
-
-> [!TIP]
-> - 不论你是否已安装 **Python>=3.10** 环境, 都推荐使用 [**uv**](https://github.com/astral-sh/uv) 运行, 因为它可以自动管理虚拟环境和方便地管理 **Python** 版本, **不过这完全是可选的**<br />
-> 使用以下命令安装
->    ```bash
->    # 在 macOS 和 Linux 上安装 uv
->    curl -LsSf https://astral.sh/uv/install.sh | sh
->    ```
->    ```powershell
->    # 在 Windows 上安装 uv
->    powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
->    ```
-> - 如果安装依赖速度太慢, 你可以考虑使用国内 pip 镜像源:<br />
-> 在 `pip` 命令使用 `-i` 参数指定, 如 `pip3 install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple`<br />
-> 或者在 `uv` 命令 `--index` 选项指定, 如 `uv sync --index https://pypi.tuna.tsinghua.edu.cn/simple`
-
-<details>
-
-  <summary>如果已安装 <b>Python>=3.10</b> 环境</summary>
-
-  - :white_check_mark: 在虚拟环境中安装 (推荐)
-  
-    1. 创建虚拟环境
-
-       - 使用系统已安装的 Python, 不使用 uv
-  
-         ```bash
-         python -m venv .venv
-         ```
-
-       - 使用 uv, 默认使用系统 Python, 你可以添加 `--python` 选项指定 Python 版本而不使用系统 Python [uv官方文档](https://docs.astral.sh/uv/concepts/python-versions/)
-       
-         ```bash
-         uv venv
-         ```
-    
-    2. 在终端激活虚拟环境 (在未安装 uv 或你想要手动激活虚拟环境时执行, 若已安装 uv, 可以跳过这一步, uv 会自动激活并使用虚拟环境)
-   
-       **Bash** 中
-       ```bash
-       source .venv/Scripts/activate
-       ```
-
-       **Powershell** 中
-       ```powershell
-       .venv\Scripts\activate.ps1
-       ```
-       
-       **Windows CMD** 中
-       ```bat
-       .venv\Scripts\activate.bat
-       ```
-
-    3. 安装依赖
-   
-       ```bash
-       # 使用 pip (若安装太慢或失败, 可使用 `-i` 指定镜像源)
-       pip3 install -U pip && pip3 install -r requirements.txt
-       # 或者使用 uv (可使用 `--index` 指定镜像源)
-       uv sync
-       # 或者
-       uv pip sync requirements.txt
-       ```
-
-  - :x: 在系统 Python 环境中安装 (不推荐)
-  
-    ```bash
-    pip3 install -U pip && pip3 install -r requirements.txt
-    ```
-
-</details>
-
-<details>
-
-  <summary>如果未安装 <b>Python>=3.10</b> 环境</summary>
-
-  你可以使用 [**uv**](https://github.com/astral-sh/uv) 安装依赖
-   
-  ```bash
-  # uv 将使用 3.10 及以上的最新 python 发行版自动创建并使用虚拟环境, 可使用 --python 选项指定 python 版本, 参见 https://docs.astral.sh/uv/reference/cli/#uv-sync--python 和 https://docs.astral.sh/uv/reference/cli/#uv-pip-sync--python
-  uv sync
-  # 或
-  uv pip sync requirements.txt
-  ```
-
-</details>
-
-3.安装[FFmpeg](https://ffmpeg.org/download.html#build-linux)，如果是Windows系统，这一步可跳过。对于Linux系统，执行以下命令安装
-
-CentOS执行
-
-```bash
-yum install epel-release
-yum install ffmpeg
-```
-
-Ubuntu则执行
-
-```bash
-apt update
-apt install ffmpeg
-```
-
-macOS 执行
-
-**如果已经安装 Homebrew 请跳过这一步**
-
-```bash
-/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-```
-
-```bash
-brew install ffmpeg
-```
-
-4.运行程序
-
-```python
-python main.py
-
-```
-或
-
-```bash
-uv run main.py
-```
-
-其中Linux系统请使用`python3 main.py` 运行。
-
-&emsp;
 ## 🐋容器运行
 
-在运行命令之前，请确保您的机器上安装了 [Docker](https://docs.docker.com/get-docker/) 和 [Docker Compose](https://docs.docker.com/compose/install/) 
+运行前请先安装 [Docker](https://docs.docker.com/get-docker/) 与 [Docker Compose](https://docs.docker.com/compose/install/)，终端执行 `docker compose version` 能输出版本号即可。
 
-1.快速启动
-
-最简单方法是运行项目中的 [docker-compose.yaml](https://github.com/ihmily/DouyinLiveRecorder/blob/main/docker-compose.yaml) 文件，只需简单执行以下命令：
+### 快速开始
 
 ```bash
-docker-compose up
+git clone https://github.com/fnguu/DouyinLiveRecorder-webui.git
+cd DouyinLiveRecorder-webui
+docker compose up -d
 ```
 
-可选 `-d` 在后台运行。
+浏览器打开 `http://localhost:8000`，粘贴直播间地址就能开始值守。首次执行会先构建镜像（约 5~10 分钟）。
 
-
-
-2.构建镜像(可选)
-
-如果你只想简单的运行程序，则不需要做这一步。Docker镜像仓库中代码版本可能不是最新的，如果要运行本仓库主分支最新代码，可以本地自定义构建，通过修改 [docker-compose.yaml](https://github.com/ihmily/DouyinLiveRecorder/blob/main/docker-compose.yaml) 文件，如将镜像名修改为 `douyin-live-recorder:latest`，并取消 `# build: .` 注释，然后再执行
+也可以直接使用已构建好的镜像，省去构建：
 
 ```bash
-docker build -t douyin-live-recorder:latest .
-docker-compose up
+docker pull ghcr.io/fnguu/douyin-live-recorder-webui:latest
+docker tag ghcr.io/fnguu/douyin-live-recorder-webui:latest douyin-live-recorder-webui:latest
+docker compose up -d
 ```
 
-或者直接使用下面命令进行构建并启动
+### compose 详解
+
+`docker-compose.yml` 全文：
+
+```yaml
+services:
+  app:
+    build: .
+    image: douyin-live-recorder-webui:latest
+    container_name: douyin-live-recorder
+    ports:
+      - "8000:8000"
+    environment:
+      - TZ=Asia/Shanghai
+      - WEBUI_PORT=8000
+    volumes:
+      - ./config:/app/config
+      - ./logs:/app/logs
+      - ./downloads:/app/downloads
+      - ./backup_config:/app/backup_config
+    restart: unless-stopped
+    stop_grace_period: 60s
+```
+
+**服务构成**：只有一个容器 `app`，容器内由 supervisor 托管两个进程 —— `recorder`（`python main.py`，负责轮询与录制）和 `webui`（uvicorn，提供网页管理端）。任一进程崩溃会被自动拉起，容器整体重启策略为 `unless-stopped`，即宿主机重启后仍会自动运行。
+
+**端口**
+
+| 映射 | 说明 |
+| --- | --- |
+| `8000:8000` | 左边是宿主机端口，右边是容器内 WebUI 端口。只想换访问端口就改左边，例如 `8080:8000` |
+
+容器内监听端口由 `WEBUI_PORT` 决定，修改时需与 ports 右侧保持一致。
+
+**卷（必须持久化，否则重建容器即丢配置和录像）**
+
+| 宿主机目录 | 容器内路径 | 存放内容 |
+| --- | --- | --- |
+| `./config` | `/app/config` | `config.ini`（全部设置）、`URL_config.ini`（主播列表）、`webui_state.json`（单个主播的通知开关等） |
+| `./downloads` | `/app/downloads` | 录像文件 |
+| `./logs` | `/app/logs` | 运行日志，网页「运行日志」页读取这里 |
+| `./backup_config` | `/app/backup_config` | 每次改配置前的自动备份 |
+
+`config` 目录首次挂载为空时，入口脚本会用镜像内置模板补全，不会因缺配置而启动失败。
+
+**环境变量**
+
+| 变量 | 默认 | 说明 |
+| --- | --- | --- |
+| `TZ` | `Asia/Shanghai` | 时区，影响录像文件名里的时间戳 |
+| `WEBUI_PORT` | `8000` | 容器内 WebUI 监听端口，需与 ports 右侧一致 |
+| `WEBUI_PASSWORD` | 空 | 设置后启用 HTTP Basic 认证，远程访问或公网暴露时务必设置 |
+| `HTTP_PROXY` / `HTTPS_PROXY` | 空 | 录制海外平台时使用的代理；代理跑在宿主机上时填 `http://host.docker.internal:7890` |
+
+**停止行为**：`stop_grace_period: 60s` 配合容器内的 SIGTERM 处理，`docker compose down` 时会先通知 ffmpeg 完成当前文件封装再退出，不会留下损坏的录像。
+
+### 常用命令
 
 ```bash
-docker-compose -f docker-compose.yaml up
+docker compose ps                              # 查看运行状态
+docker compose logs -f                         # 跟踪日志
+docker compose restart                          # 重启
+docker compose pull && docker compose up -d     # 拉取新镜像并重建容器
+docker compose down                             # 停止并移除容器（卷与录像保留）
 ```
 
-
-
-3.停止容器实例
+容器内的实时输出也可以直接查看：
 
 ```bash
-docker-compose stop
+docker exec -it douyin-live-recorder tail -f /app/logs/recorder.log
 ```
 
+### 本地构建镜像
 
+修改代码或想用最新提交时可自行构建：
 
-4.注意事项
+```bash
+docker build -t douyin-live-recorder-webui:latest .
 
-①在docker容器内运行本程序之前，请先在配置文件中添加要录制的直播间地址。
+# 国内网络建议指定 pip 镜像源
+docker build \
+  --build-arg PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple \
+  -t douyin-live-recorder-webui:latest .
 
-②在容器内时，如果手动中断容器运行停止录制，会导致正在录制的视频文件损坏！
+docker compose up -d
+```
 
-**无论哪种运行方式，为避免手动中断或者异常中断导致录制的视频文件损坏的情况，推荐使用 `ts` 格式保存**。
+本仓库也配置了 GitHub Actions，向 `main` 分支推送会自动构建并发布镜像到 `ghcr.io/fnguu/douyin-live-recorder-webui`。
+
+### NAS 部署
+
+群晖、绿联等 x86 架构（Intel / AMD 处理器）NAS 可直接使用 [docker-compose.ugreen.yml](docker-compose.ugreen.yml)，该配置直接拉取现成镜像、不在 NAS 上构建，更适合算力有限的设备。详细步骤见 [WEBUI.md](WEBUI.md) 的 NAS 部署章节。
+
+### 注意事项
+
+1. 抖音等平台需要有效 Cookie，在网页「全局设置 → Cookie 凭证」里填写，否则会提示获取失败。
+2. 建议使用 `ts` 格式保存，异常中断时文件仍可修复；容器停止已做优雅处理，但请避免 `docker kill`。
+3. WebUI 默认没有认证，不要把 8000 端口直接暴露到公网，需要远程访问请设置 `WEBUI_PASSWORD`。
+4. 删除容器不会删除录像，但要删除 `./downloads` 目录才会真正释放磁盘。
 
 &emsp;
 
