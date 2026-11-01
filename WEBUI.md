@@ -93,9 +93,9 @@ python -m uvicorn webui.app:app --host 0.0.0.0 --port 8000
 
 需要本机已安装 `ffmpeg` 与 `node`（部分平台签名脚本依赖 Node）。
 
-### 2.5 绿联 DXP4800 Plus（UGOS Pro）
+### 2.5 绿联 NAS（UGOS Pro）
 
-DXP4800 Plus 是 Intel 奔腾金牌 8505，**x86_64 架构**，与 CI 构建出的 `linux/amd64` 镜像一致，不需要交叉编译或额外参数。
+绿联 NAS 的 x86 机型（Intel / AMD 处理器）与 CI 构建出的 `linux/amd64` 镜像架构一致，不需要交叉编译或额外参数。
 
 **第一步：把镜像弄到 NAS 上**
 
@@ -178,7 +178,7 @@ docker compose up -d
 │   └── supervisord.conf        # 两个进程：recorder + webui
 ├── Dockerfile
 ├── docker-compose.yml
-├── docker-compose.ugreen.yml   # 绿联 DXP4800 Plus 专用（拉现成镜像，不在 NAS 上构建）
+├── docker-compose.ugreen.yml   # 绿联 NAS 专用（拉现成镜像，不在 NAS 上构建）
 ├── requirements-webui.txt      # fastapi + uvicorn
 └── config/
     ├── config.ini              # 全局设置（WebUI 原地修改）

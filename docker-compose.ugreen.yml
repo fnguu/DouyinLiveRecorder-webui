@@ -1,6 +1,6 @@
-# 绿联 DXP4800 Plus（UGOS Pro，x86_64）部署配置
-# 镜像已按 linux/amd64 构建，与 DXP4800 Plus 架构一致，无需交叉编译。
-# 操作步骤见 WEBUI.md「绿联 NAS 部署」一节。
+# NAS（x86_64）部署配置
+# 镜像为 linux/amd64，适用于常见 x86 架构 NAS，无需交叉编译。
+# 操作步骤见 WEBUI.md 的 NAS 部署章节。
 version: "3.8"
 
 services:

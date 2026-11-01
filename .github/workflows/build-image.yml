@@ -16,7 +16,8 @@ on:
         default: 'linux/amd64'
 
 env:
-  IMAGE_NAME: ${{ github.repository }}
+  # 镜像名固定在仓库名之外，仓库改名不会导致镜像地址变化
+  IMAGE_NAME: ${{ github.repository_owner }}/douyin-live-recorder-webui
 
 concurrency:
   group: build-${{ github.ref }}
