@@ -285,7 +285,20 @@
     $('#modal').style.maxWidth = width + 'px';
     $('#modal-mask').hidden = false;
   }
-  function closeModal() { $('#modal-mask').hidden = true; }
+  // 关闭弹窗/切换文件时彻底停止播放：只隐藏容器的话视频会在后台继续出声
+  function stopPlayer() {
+    const video = document.getElementById('player');
+    if (!video) return;
+    video.onerror = null;
+    try { video.pause(); } catch (e) { /* ignore */ }
+    video.removeAttribute('src');
+    try { video.load(); } catch (e) { /* ignore */ }
+  }
+
+  function closeModal() {
+    stopPlayer();
+    $('#modal-mask').hidden = true;
+  }
 
   const QUALITY_OPTIONS = ['原画', '超清', '高清', '标清', '流畅'];
 
@@ -434,6 +447,7 @@
 
   // ------------------------------------------------------------ 主播录像
   async function openFilesModal(a) {
+    stopPlayer();
     openModal({
       title: `${a.display_name} · 录制文件`,
       width: 960,
@@ -503,6 +517,7 @@
     $('#player-name').textContent = name;
     $('#player-tip').hidden = !['ts', 'mkv', 'flv'].includes(ext);
     video.onerror = () => toast('这个文件无法在线播放，可以点右侧下载后用本地播放器打开', 'err');
+    try { video.pause(); } catch (e) { /* ignore */ }
     video.src = `/api/media?path=${encodeURIComponent(path)}`;
     video.load();
     const p = video.play();
