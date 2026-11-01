@@ -272,7 +272,7 @@ supervisord
 本目录已经是初始化好的 git 仓库（分支 `main`，含 `.gitattributes` 强制脚本 LF 换行，避免
 容器里出现 `bash\r: No such file`）。配好凭证后一条命令即可推送，推送后 Actions 自动构建镜像：
 
-本仓库：<https://github.com/fnguu/douyin-live-recorder-webui>
+本仓库：<https://github.com/fnguu/DouyinLiveRecorder-webui>
 镜像：`ghcr.io/fnguu/douyin-live-recorder-webui:latest`
 
 ```bash
