@@ -481,14 +481,27 @@ html[data-theme="light"] .log-box { background: #12151b; }
 .file-name:hover { color: var(--accent); }
 .file-meta { font-size: 11.5px; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .btn.file-play { padding: 5px 12px; font-size: 12px; }
-.player-wrap { margin-bottom: 14px; border: 1px solid var(--border); border-radius: 12px; overflow: hidden; background: #000; }
-.player-wrap video { width: 100%; max-height: 46vh; display: block; background: #000; }
+.player-wrap {
+  margin-bottom: 14px; border: 1px solid var(--border); border-radius: 12px;
+  overflow: hidden; background: #000;
+  /* 作为 flex item 必须允许收缩，否则 video 固有尺寸 + 长文件名会把弹窗撑宽 */
+  max-width: 100%; min-width: 0; box-sizing: border-box;
+}
+.player-wrap video {
+  display: block; width: 100%; max-width: 100%; height: auto;
+  max-height: 46vh; background: #000; object-fit: contain;
+}
 .player-meta {
   display: flex; align-items: center; gap: 10px; padding: 7px 12px;
   background: var(--panel-2); font-size: 12px; color: var(--text-2);
+  min-width: 0; overflow: hidden;
 }
-.player-tip { color: var(--muted); font-size: 11.5px; margin-left: auto; }
-#modal-body { max-height: 64vh; overflow-y: auto; }
+.player-file, #player-name {
+  min-width: 0; flex: 1 1 auto;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.player-tip { color: var(--muted); font-size: 11.5px; margin-left: auto; flex: 0 0 auto; }
+#modal-body { max-height: 64vh; overflow-y: auto; overflow-x: hidden; min-width: 0; }
 
 /* ---------------- responsive ---------------- */
 
@@ -572,11 +585,13 @@ html[data-theme="light"] .log-box { background: #12151b; }
     row-gap: 2px; column-gap: 8px; padding: 9px 10px;
   }
   .file-meta { white-space: normal; }
+  .player-wrap { border-radius: 10px; margin-bottom: 12px; }
   .player-wrap video { max-height: 34vh; }
   .player-meta { flex-wrap: wrap; gap: 2px 10px; }
   .player-tip { margin-left: 0; }
   .log-box { height: calc(100vh - 300px); padding: 10px 12px; }
   .save-bar { left: 0; right: 0; }
-  .toast-stack { left: 12px; right: 12px; top: 12px; }
+  /* 手机上提示条改为底部弹出，避免遮挡顶部导航与标题 */
+  .toast-stack { left: 12px; right: 12px; top: auto; bottom: 16px; flex-direction: column-reverse; }
   .toast { max-width: none; }
 }

@@ -182,7 +182,7 @@
 
   function anchorRow(a) {
     const on = !!a.enabled;
-    const badge = BADGE[a.state] || a.state_text || '未知';
+    const badge = a.state_text || BADGE[a.state] || '未知';
     const live = a.state === 'recording' || a.state === 'live';
     const lastLive = a.last_live_at || '—';
     return `
@@ -247,7 +247,7 @@
           if (b) {
             b.className = `badge ${a.state}`;
             b.innerHTML = (a.state === 'recording' || a.state === 'live' ? '<i class="dot live"></i>' : '') +
-              esc(BADGE[a.state] || a.state_text || '');
+              esc(a.state_text || BADGE[a.state] || '');
           }
           row.classList.toggle('is-off', !a.enabled);
         });
