@@ -1,0 +1,30 @@
+# 绿联 DXP4800 Plus（UGOS Pro，x86_64）部署配置
+# 镜像已按 linux/amd64 构建，与 DXP4800 Plus 架构一致，无需交叉编译。
+# 操作步骤见 WEBUI.md「绿联 NAS 部署」一节。
+version: "3.8"
+
+services:
+  douyin-live-recorder:
+    image: ghcr.io/fnguu/douyin-live-recorder-webui:latest
+    container_name: douyin-live-recorder
+    restart: unless-stopped
+    ports:
+      # 左边是 NAS 上的端口，右边是容器内端口（不要改右边）。
+      # 8000 被占用时只改左边，例如 "8080:8000"，访问地址就变成 http://NAS的IP:8080
+      - "8000:8000"
+    environment:
+      TZ: Asia/Shanghai
+      WEBUI_PORT: "8000"
+      # 局域网外访问请打开，改成自己的密码（浏览器会弹登录框）
+      # WEBUI_PASSWORD: "change-me"
+      # 录制 TikTok/Twitch 等海外平台时，指向你的代理（NAS 所在网段的宿主机 IP）
+      # HTTP_PROXY: "http://192.168.1.10:7890"
+      # HTTPS_PROXY: "http://192.168.1.10:7890"
+    volumes:
+      # 相对路径基于本 compose 文件所在目录，UGOS 建项目时会自动落在项目文件夹下
+      - ./config:/app/config
+      - ./downloads:/app/downloads
+      - ./logs:/app/logs
+      - ./backup_config:/app/backup_config
+    # 停止时给 ffmpeg 留足收尾时间，避免正在录制的文件损坏
+    stop_grace_period: 60s

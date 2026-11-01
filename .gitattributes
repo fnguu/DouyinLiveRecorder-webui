@@ -1,0 +1,7 @@
+# 统一换行，避免 shell 脚本在容器里因 CRLF 执行失败
+* text=auto eol=lf
+*.sh text eol=lf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.png binary
+*.mo binary

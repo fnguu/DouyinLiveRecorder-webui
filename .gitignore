@@ -165,3 +165,7 @@ cython_debug/
 #.idea/
 
 backup_config/
+
+# WebUI runtime state
+config/webui_state.json
+config/*.bak

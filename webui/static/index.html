@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>直播录制 · 控制台</title>
+<link rel="stylesheet" href="/static/style.css?v=2">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%232563eb'/><circle cx='16' cy='16' r='7' fill='white'/><circle cx='16' cy='16' r='3' fill='%232563eb'/></svg>">
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="brand-logo">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+          <circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3" fill="currentColor" stroke="none"/>
+        </svg>
+      </div>
+      <div class="brand-text">
+        <strong>直播录制</strong>
+        <span>WebUI 控制台</span>
+      </div>
+    </div>
+
+    <nav class="nav" id="nav">
+      <button class="nav-item active" data-view="overview">
+        <svg viewBox="0 0 24 24"><path d="M4 13h6V4H4v9zm0 7h6v-5H4v5zm10 0h6V11h-6v9zm0-16v5h6V4h-6z"/></svg>
+        <span>概览</span>
+      </button>
+      <button class="nav-item" data-view="anchors">
+        <svg viewBox="0 0 24 24"><path d="M16 11a4 4 0 1 0-4-4 4 4 0 0 0 4 4zm-8 1a3 3 0 1 0-3-3 3 3 0 0 0 3 3zm8 1c-2.7 0-8 1.3-8 4v3h16v-3c0-2.7-5.3-4-8-4zM8 14c-2.3 0-7 1.1-7 3.4V18h5v-3c0-1.1.6-2.1 1.7-2.9A9 9 0 0 0 8 14z"/></svg>
+        <span>主播管理</span>
+        <em class="nav-badge" id="nav-anchor-count">0</em>
+      </button>
+      <button class="nav-item" data-view="settings">
+        <svg viewBox="0 0 24 24"><path d="M12 15.5A3.5 3.5 0 1 1 15.5 12 3.5 3.5 0 0 1 12 15.5zm8.9-2.6l1.9-1.5-1.9-3.3-2.3.7a7.6 7.6 0 0 0-1.6-1l-.3-2.4h-3.8l-.4 2.4a7.6 7.6 0 0 0-1.6 1l-2.2-.7-1.9 3.3 1.8 1.5a8.2 8.2 0 0 0 0 1.9L4.7 16.3l1.9 3.3 2.2-.7a7.6 7.6 0 0 0 1.6 1l.4 2.4h3.8l.3-2.4a7.6 7.6 0 0 0 1.6-1l2.3.7 1.9-3.3-1.9-1.5a8.2 8.2 0 0 0 0-1.9z"/></svg>
+        <span>全局设置</span>
+      </button>
+      <button class="nav-item" data-view="logs">
+        <svg viewBox="0 0 24 24"><path d="M4 4h16v2H4V4zm0 5h16v2H4V9zm0 5h11v2H4v-2zm0 5h11v2H4v-2z"/></svg>
+        <span>运行日志</span>
+      </button>
+    </nav>
+
+    <div class="sidebar-foot">
+      <button class="theme-toggle" id="theme-toggle" title="切换主题">
+        <svg viewBox="0 0 24 24" class="icon-moon"><path d="M12 3a9 9 0 1 0 9 9 7 7 0 0 1-9-9z"/></svg>
+        <svg viewBox="0 0 24 24" class="icon-sun"><path d="M12 17a5 5 0 1 0-5-5 5 5 0 0 0 5 5zm0-14v2m0 18v-2M3 12h2m14 0h2M5.6 5.6l1.4 1.4m10 10l1.4 1.4m0-12.8l-1.4 1.4m-10 10L5.6 18.4"/></svg>
+        <span>主题</span>
+      </button>
+      <div class="ver" id="ver-text">v4.0.7</div>
+    </div>
+  </aside>
+
+  <main class="main">
+    <header class="topbar">
+      <div>
+        <h1 id="page-title">概览</h1>
+        <p id="page-sub" class="page-sub">录制进程与主播整体状态</p>
+      </div>
+      <div class="pills" id="top-pills"></div>
+    </header>
+
+    <div class="scroll">
+      <!-- 概览 -->
+      <section class="view active" id="view-overview">
+        <div class="stat-grid" id="stat-grid"></div>
+        <div class="two-col">
+          <div class="card">
+            <div class="card-head">
+              <h2>正在录制</h2>
+              <span class="hint" id="recording-hint"></span>
+            </div>
+            <div id="recording-list" class="mini-list"></div>
+          </div>
+          <div class="card">
+            <div class="card-head">
+              <h2>最近录像</h2>
+              <span class="hint">下载目录最新文件</span>
+            </div>
+            <div id="file-list" class="mini-list"></div>
+          </div>
+        </div>
+        <div class="card tips">
+          <h2>使用提示</h2>
+          <ul>
+            <li>关闭某个主播的「录制」后，正在进行的录制会安全收尾（ffmpeg 正常结束），不会产生损坏文件。</li>
+            <li>「通知」开关只影响该主播的开播/关播推送，全局推送渠道仍在「全局设置 → 推送通知」中配置。</li>
+            <li>修改设置后无需重启容器，录制器在下一轮检测时自动读取新配置。</li>
+          </ul>
+        </div>
+      </section>
+
+      <!-- 主播 -->
+      <section class="view" id="view-anchors">
+        <div class="toolbar">
+          <div class="search">
+            <svg viewBox="0 0 24 24"><path d="M15.5 14h-.8l-.3-.3a6.5 6.5 0 1 0-.7.7l.3.3v.8l5 5 1.5-1.5-5-5zm-6 0a4.5 4.5 0 1 1 4.5-4.5A4.5 4.5 0 0 1 9.5 14z"/></svg>
+            <input id="anchor-search" type="search" placeholder="搜索主播名称或地址">
+          </div>
+          <div class="toolbar-actions">
+            <button class="btn ghost" id="btn-batch">批量添加</button>
+            <button class="btn primary" id="btn-add">
+              <svg viewBox="0 0 24 24"><path d="M11 5h2v6h6v2h-6v6h-2v-6H5v-2h6z"/></svg>
+              添加主播
+            </button>
+          </div>
+        </div>
+
+        <div class="filter-row" id="filter-row">
+          <button class="chip active" data-filter="all">全部</button>
+          <button class="chip" data-filter="recording">录制中</button>
+          <button class="chip" data-filter="live">直播中</button>
+          <button class="chip" data-filter="idle">等待开播</button>
+          <button class="chip" data-filter="disabled">已停止</button>
+        </div>
+
+        <div class="anchor-list" id="anchor-list"></div>
+        <div class="empty" id="anchor-empty" hidden>
+          <div class="empty-art">
+            <svg viewBox="0 0 64 64" fill="none" stroke="currentColor" stroke-width="2"><rect x="8" y="14" width="48" height="34" rx="4"/><path d="M24 54h16M32 48v6"/><circle cx="32" cy="31" r="6"/></svg>
+          </div>
+          <h3>还没有添加主播</h3>
+          <p>粘贴直播间地址即可开始值守，支持抖音、快手、虎牙、斗鱼、B站、TikTok 等 40+ 平台。</p>
+          <button class="btn primary" id="btn-add-empty">添加第一个主播</button>
+        </div>
+      </section>
+
+      <!-- 设置 -->
+      <section class="view" id="view-settings">
+        <div class="settings-layout">
+          <aside class="settings-nav" id="settings-nav"></aside>
+          <div class="settings-body">
+            <div id="settings-groups"></div>
+          </div>
+        </div>
+        <div class="save-bar" id="save-bar">
+          <span id="save-hint">所有修改保存在容器内 config/config.ini</span>
+          <div class="save-actions">
+            <button class="btn ghost" id="btn-reset">撤销修改</button>
+            <button class="btn primary" id="btn-save" disabled>保存设置</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- 日志 -->
+      <section class="view" id="view-logs">
+        <div class="toolbar">
+          <div class="segmented" id="log-tabs">
+            <button class="seg active" data-log="console">运行输出</button>
+            <button class="seg" data-log="play">直播状态</button>
+            <button class="seg" data-log="debug">调试日志</button>
+          </div>
+          <div class="toolbar-actions">
+            <label class="switch-label"><input type="checkbox" id="log-auto" checked> 自动刷新</label>
+            <select id="log-lines" class="select">
+              <option value="200">200 行</option>
+              <option value="500" selected>500 行</option>
+              <option value="1000">1000 行</option>
+            </select>
+            <button class="btn ghost" id="btn-log-refresh">刷新</button>
+          </div>
+        </div>
+        <div class="log-box" id="log-box"><pre id="log-content">加载中…</pre></div>
+      </section>
+    </div>
+  </main>
+</div>
+
+<div class="modal-mask" id="modal-mask" hidden>
+  <div class="modal" id="modal">
+    <div class="modal-head">
+      <h3 id="modal-title">添加主播</h3>
+      <button class="icon-btn" id="modal-close" aria-label="关闭">
+        <svg viewBox="0 0 24 24"><path d="M18.3 5.7L12 12l6.3 6.3-1.4 1.4L10.6 13.4 4.3 19.7 2.9 18.3 9.2 12 2.9 5.7 4.3 4.3l6.3 6.3 6.3-6.3z"/></svg>
+      </button>
+    </div>
+    <div class="modal-body" id="modal-body"></div>
+    <div class="modal-foot" id="modal-foot"></div>
+  </div>
+</div>
+
+<div class="toast-stack" id="toast-stack"></div>
+<script src="/static/app.js?v=2"></script>
+</body>
+</html>

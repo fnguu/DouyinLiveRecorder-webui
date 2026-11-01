@@ -1,0 +1,23 @@
+services:
+  app:
+    build: .
+    image: douyin-live-recorder-webui:latest
+    container_name: douyin-live-recorder
+    ports:
+      - "8000:8000"
+    environment:
+      - TZ=Asia/Shanghai
+      - WEBUI_PORT=8000
+      # 需要远程访问时设置访问密码（浏览器会弹出登录框）
+      # - WEBUI_PASSWORD=change-me
+      # 录制海外平台需要代理时取消注释（宿主机代理用 host.docker.internal）
+      # - HTTP_PROXY=http://host.docker.internal:7890
+      # - HTTPS_PROXY=http://host.docker.internal:7890
+    volumes:
+      - ./config:/app/config
+      - ./logs:/app/logs
+      - ./downloads:/app/downloads
+      - ./backup_config:/app/backup_config
+    restart: unless-stopped
+    # 留足时间让 ffmpeg 安全收尾，避免 ts/mp4 文件损坏
+    stop_grace_period: 60s

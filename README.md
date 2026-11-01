@@ -1,5 +1,17 @@
 ![video_spider](https://socialify.git.ci/ihmily/DouyinLiveRecorder/image?font=Inter&forks=1&language=1&owner=1&pattern=Circuit%20Board&stargazers=1&theme=Light)
 
+> ## 🖥️ 本仓库是带 WebUI 控制台的容器版
+>
+> 在原版基础上增加了浏览器管理界面：**不动代码、不改配置文件格式**，网页里就能增删主播、
+> 单独控制每个主播是否录制 / 是否推送、以及编辑全部设置项（录制、推送、Cookie、账号）。
+>
+> ```bash
+> docker compose up -d --build     # 或 docker compose up -d（使用已构建镜像）
+> # 打开 http://localhost:8000
+> ```
+>
+> 详细说明见 **[WEBUI.md](WEBUI.md)**。原版功能与用法见下方官方文档。
+
 ## 💡简介
 [![Python Version](https://img.shields.io/badge/python-3.11.6-blue.svg)](https://www.python.org/downloads/release/python-3116/)
 [![Supported Platforms](https://img.shields.io/badge/platforms-Windows%20%7C%20Linux-blue.svg)](https://github.com/ihmily/DouyinLiveRecorder)

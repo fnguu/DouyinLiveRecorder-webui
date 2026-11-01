@@ -79,8 +79,56 @@ clear_command = "cls" if os_type == 'nt' else "clear"
 color_obj = utils.Color()
 os.environ['PATH'] = ffmpeg_path + os.pathsep + current_env_path
 
+# ---- WebUI 集成（不依赖 Web 框架，缺失时自动降级为无 UI 行为） ----
+try:
+    from webui import bridge as webui_bridge
+except Exception:  # pragma: no cover
+    webui_bridge = None
+
+NO_CLEAR = os.environ.get('DLR_NO_CLEAR') == '1'
+NONINTERACTIVE = os.environ.get('DLR_NONINTERACTIVE') == '1' or not sys.stdin or not sys.stdin.isatty()
+
+
+def ui_mark(url: str, **kwargs) -> None:
+    if webui_bridge:
+        try:
+            webui_bridge.mark(url, **kwargs)
+        except Exception:
+            pass
+
+
+def ui_unmark(url: str) -> None:
+    if webui_bridge:
+        try:
+            webui_bridge.unmark(url)
+        except Exception:
+            pass
+
+
+def ui_notify_ok(url: str) -> bool:
+    """单个主播的推送开关（在 WebUI 里逐个配置）。"""
+    if not webui_bridge:
+        return True
+    try:
+        return webui_bridge.is_notify_enabled(url)
+    except Exception:
+        return True
+
 
 def signal_handler(_signal, _frame):
+    """容器 stop / kill 时先让 ffmpeg 安全收尾，避免录像文件损坏。"""
+    global exit_recording
+    if exit_recording:
+        sys.exit(0)
+    exit_recording = True
+    try:
+        if recording:
+            print('收到停止信号，正在安全结束录制（最长等待 15 秒）...', flush=True)
+    except Exception:
+        pass
+    deadline = time.time() + 15
+    while time.time() < deadline and recording:
+        time.sleep(0.5)
     sys.exit(0)
 
 
@@ -90,10 +138,32 @@ signal.signal(signal.SIGTERM, signal_handler)
 def display_info() -> None:
     global start_display_time
     time.sleep(5)
+    tick = 0
     while True:
         try:
             sys.stdout.flush()
             time.sleep(5)
+            tick += 1
+
+            # 把运行时状态同步给 WebUI（心跳 + 每个线程的实时状态）
+            if webui_bridge:
+                try:
+                    webui_bridge.flush(
+                        running=running_list, monitoring=monitoring,
+                        error_count=error_count, version=version, recording=recording
+                    )
+                except Exception:
+                    pass
+
+            if NO_CLEAR:
+                # 容器模式：不清屏，每 60 秒输出一行摘要，避免把日志刷爆
+                if tick % 12 == 0:
+                    now = time.strftime("%H:%M:%S", time.localtime())
+                    print(f"[{now}] 监测 {monitoring} 个直播间 | 录制 {len(set(recording))} 路 | "
+                          f"瞬时错误 {error_count} | 格式 {video_save_type} | 画质 {video_record_quality}",
+                          flush=True)
+                continue
+
             if Path(sys.executable).name != 'pythonw.exe':
                 os.system(clear_command)
             print(f"\r共监测{monitoring}个直播中", end=" | ")
@@ -420,6 +490,8 @@ def direct_download_stream(source_url: str, save_path: str, record_name: str, li
 def check_subprocess(record_name: str, record_url: str, ffmpeg_command: list, save_type: str,
                      script_command: str | None = None) -> bool:
     save_file_path = ffmpeg_command[-1]
+    ui_mark(record_url, status='recording', name=record_name,
+            file=os.path.basename(str(save_file_path)))
     process = subprocess.Popen(
         ffmpeg_command, stdin=subprocess.PIPE, stderr=subprocess.STDOUT, startupinfo=get_startup_info(os_type)
     )
@@ -445,6 +517,7 @@ def check_subprocess(record_name: str, record_url: str, ffmpeg_command: list, sa
             else:
                 process.send_signal(signal.SIGINT)
             process.wait()
+            ui_unmark(record_url)
             return True
         time.sleep(1)
 
@@ -488,6 +561,7 @@ def check_subprocess(record_name: str, record_url: str, ffmpeg_command: list, sa
         color_obj.print_colored(f"\n{record_name} {stop_time} 直播录制出错,返回码: {return_code}\n", color_obj.RED)
 
     recording.discard(record_name)
+    ui_mark(record_url, status='live', name=record_name, file='')
     return False
 
 
@@ -555,6 +629,7 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
             retry = 0
             record_quality_zh, record_url, anchor_name = url_data
             record_quality = get_quality_code(record_quality_zh)
+            ui_mark(record_url, status='waiting', name=anchor_name or '')
             proxy_address = proxy_addr
             platform = '未知平台'
             live_domain = '/'.join(record_url.split('/')[0:3])
@@ -1051,6 +1126,7 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
 
                     if not port_info.get("anchor_name", ''):
                         print(f'序号{count_variable} 网址内容获取失败,进行重试中...获取失败的地址是:{url_data}')
+                        ui_mark(record_url, status='error', name=anchor_name or '')
                         with max_request_lock:
                             error_count += 1
                             error_window.append(1)
@@ -1060,6 +1136,7 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
 
                         if record_url in url_comments:
                             print(f"[{anchor_name}]已被注释,本条线程将会退出")
+                            ui_unmark(record_url)
                             clear_record_info(record_name, record_url)
                             return
 
@@ -1075,9 +1152,10 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
                         push_at = datetime.datetime.today().strftime('%Y-%m-%d %H:%M:%S')
                         if port_info['is_live'] is False:
                             print(f"\r{record_name} 等待直播... ")
+                            ui_mark(record_url, status='idle', name=record_name, platform=platform)
 
                             if start_pushed:
-                                if over_show_push:
+                                if over_show_push and ui_notify_ok(record_url):
                                     push_content = "直播间状态更新：[直播间名称] 直播已结束！时间：[时间]"
                                     if over_push_message_text:
                                         push_content = over_push_message_text
@@ -1094,8 +1172,9 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
                         else:
                             content = f"\r{record_name} 正在直播中..."
                             print(content)
+                            ui_mark(record_url, status='live', name=record_name, platform=platform)
 
-                            if live_status_push and not start_pushed:
+                            if live_status_push and not start_pushed and ui_notify_ok(record_url):
                                 if begin_show_push:
                                     push_content = "直播间状态更新：[直播间名称] 正在直播中，时间：[时间]"
                                     if begin_push_message_text:
@@ -1793,9 +1872,13 @@ while True:
                 ini_URL_content = file.read().strip()
 
         if not ini_URL_content.strip():
-            input_url = input('请输入要录制的主播直播间网址（尽量使用PC网页端的直播间地址）:\n')
-            with open(url_config_file, 'w', encoding=text_encoding) as file:
-                file.write(input_url)
+            if NONINTERACTIVE:
+                # 容器里没有可交互终端：不要卡在 input()，等 WebUI 添加主播即可
+                time.sleep(1)
+            else:
+                input_url = input('请输入要录制的主播直播间网址（尽量使用PC网页端的直播间地址）:\n')
+                with open(url_config_file, 'w', encoding=text_encoding) as file:
+                    file.write(input_url)
     except OSError as err:
         logger.error(f"发生 I/O 错误: {err}")
 
