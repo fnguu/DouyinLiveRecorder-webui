@@ -184,17 +184,19 @@
     const on = !!a.enabled;
     const badge = BADGE[a.state] || a.state_text || '未知';
     const live = a.state === 'recording' || a.state === 'live';
+    const lastLive = a.last_live_at || '—';
     return `
       <div class="anchor ${on ? '' : 'is-off'}" data-id="${a.id}">
-        <div class="avatar" style="background:${colorOf(a.platform)}">${esc(initialOf(a.display_name))}</div>
-        <div class="anchor-main">
-          <div class="anchor-title">
-            <strong>${esc(a.display_name)}</strong>
-            <span class="tag">${esc(a.platform || '其他')}</span>
-            <span class="badge ${esc(a.state)}">${live ? '<i class="dot live"></i>' : ''}${esc(badge)}</span>
+        <div class="col-anchor">
+          <div class="avatar" style="background:${colorOf(a.platform)}">${esc(initialOf(a.display_name))}</div>
+          <div class="anchor-main">
+            <button class="anchor-name" data-act="files" title="查看录制文件">${esc(a.display_name)}</button>
+            <div class="anchor-url" title="${esc(a.url)}">${esc(a.url)}</div>
           </div>
-          <div class="anchor-url" title="${esc(a.url)}">${esc(a.url)}</div>
         </div>
+        <div class="col-platform"><span class="tag">${esc(a.platform || '其他')}</span></div>
+        <div class="col-state"><span class="badge ${esc(a.state)}">${live ? '<i class="dot live"></i>' : ''}${esc(badge)}</span></div>
+        <div class="col-time">${esc(lastLive)}</div>
         <div class="anchor-controls">
           <label class="toggle-bar ${on ? 'on' : ''}">
             <input type="checkbox" data-act="record" ${on ? 'checked' : ''}>
@@ -207,7 +209,7 @@
             <span class="bar-track"><span class="bar-thumb"></span></span>
           </label>
           <div class="anchor-actions">
-            <button class="icon-btn" data-act="edit" title="编辑">
+            <button class="icon-btn" data-act="edit" title="修改">
               <svg viewBox="0 0 24 24"><path d="M3 17.25V21h3.75L17.8 9.94l-3.75-3.75L3 17.25zM20.7 7.04a1 1 0 0 0 0-1.41l-2.34-2.34a1 1 0 0 0-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg>
             </button>
             <button class="icon-btn danger" data-act="delete" title="删除">
@@ -428,6 +430,86 @@
         await loadAnchors();
       } catch (e) { toast(e.message, 'err'); }
     };
+  }
+
+  // ------------------------------------------------------------ 主播录像
+  async function openFilesModal(a) {
+    openModal({
+      title: `${a.display_name} · 录制文件`,
+      width: 960,
+      body: '<div id="files-body"><div class="mini-empty" style="padding:24px;text-align:center">正在扫描录像目录…</div></div>',
+      footer: '<button class="btn ghost" onclick="__closeModal()">关闭</button>',
+    });
+    try {
+      const data = await api(`/api/anchors/${a.id}/files`);
+      renderFiles(data);
+    } catch (e) {
+      $('#files-body').innerHTML = `<div class="mini-empty" style="padding:24px;text-align:center">${esc(e.message)}</div>`;
+    }
+  }
+
+  const EXT_LABEL = { ts: 'TS', mp4: 'MP4', mkv: 'MKV', flv: 'FLV', m4a: 'M4A', mp3: 'MP3', webm: 'WEBM', mov: 'MOV' };
+
+  function renderFiles(data) {
+    const items = data.items || [];
+    const names = data.names || [];
+    let list = '';
+    if (!items.length) {
+      const reason = names.length
+        ? `按昵称「${names.map((n) => esc(n)).join(' / ')}」在 downloads 目录里没找到录像`
+        : '还没拿到主播昵称，等录制器抓到名字后再来看';
+      list = `<div class="mini-empty" style="padding:28px;text-align:center">
+        还没有这个主播的录像文件
+        <div style="font-size:12px;margin-top:6px">${reason}</div>
+      </div>`;
+    } else {
+      list = `<div class="files-summary">共 ${items.length} 个文件 · ${fmtSize(data.total_size)}</div>
+        <div class="file-items">${items.map((f) => `
+          <div class="file-item" data-path="${esc(f.path)}" data-ext="${esc(f.ext)}" data-name="${esc(f.name)}">
+            <span class="file-ext">${esc(EXT_LABEL[f.ext] || f.ext.toUpperCase())}</span>
+            <span class="file-name" title="${esc(f.path)}">${esc(f.name)}</span>
+            <span class="file-size">${fmtSize(f.size)}</span>
+            <span class="file-time">${esc(f.mtime)}</span>
+            <button class="btn primary file-play" data-act="play">播放</button>
+            <a class="icon-btn" href="/api/media?path=${encodeURIComponent(f.path)}" download="${esc(f.name)}" title="下载">
+              <svg viewBox="0 0 24 24"><path d="M12 16l-5-5h3V4h4v7h3l-5 5zM5 18h14v2H5z"/></svg>
+            </a>
+          </div>`).join('')}</div>`;
+    }
+
+    const body = $('#files-body');
+    body.innerHTML = `<div class="player-wrap" id="player-wrap" hidden>
+        <video id="player" controls playsinline preload="metadata"></video>
+        <div class="player-meta">
+          <span id="player-name"></span>
+          <span class="player-tip" id="player-tip" hidden>首次播放 ts / mkv 需要转封装，大文件请稍等几秒</span>
+        </div>
+      </div>` + list;
+
+    body.onclick = (e) => {
+      const item = e.target.closest('.file-item');
+      if (!item) return;
+      if (e.target.closest('[data-act="play"]') || e.target.closest('.file-name')) {
+        playFile(item.dataset.path, item.dataset.ext, item.dataset.name);
+      }
+    };
+  }
+
+  function playFile(path, ext, name) {
+    const wrap = $('#player-wrap');
+    const video = $('#player');
+    if (!wrap || !video) return;
+    wrap.hidden = false;
+    $('#player-name').textContent = name;
+    $('#player-tip').hidden = !['ts', 'mkv', 'flv'].includes(ext);
+    video.onerror = () => toast('这个文件无法在线播放，可以点右侧下载后用本地播放器打开', 'err');
+    video.src = `/api/media?path=${encodeURIComponent(path)}`;
+    video.load();
+    const p = video.play();
+    if (p && p.catch) p.catch(() => {});
+    if (typeof wrap.scrollIntoView === 'function') {
+      wrap.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
   }
 
   function confirmDelete(a) {
@@ -659,6 +741,7 @@
       const anchor = state.anchors.find((a) => a.id === id);
       const act = e.target.closest('[data-act]');
       if (!act) return;
+      if (act.dataset.act === 'files') openFilesModal(anchor);
       if (act.dataset.act === 'edit') openEditModal(anchor);
       if (act.dataset.act === 'delete') confirmDelete(anchor);
     });

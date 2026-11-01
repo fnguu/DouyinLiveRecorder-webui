@@ -2,7 +2,9 @@
 """DouyinLiveRecorder WebUI 后端（FastAPI）。"""
 import base64
 import os
+import re
 import secrets
+import time
 from typing import Any, Dict, List, Optional
 
 from fastapi import Body, FastAPI, HTTPException, Query, Request
@@ -10,9 +12,10 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import anchors as anchors_mod
+from . import media
 from .config_io import read_ini
 from .paths import CONFIG_FILE, STATIC_DIR, ensure_dirs, norm_url
-from .runtime import disk_info, read_runtime, recent_files, tail_log, thread_map
+from .runtime import disk_info, files_for_names, read_runtime, recent_files, tail_log, thread_map
 from .schema import build_schema, save_settings
 
 ensure_dirs()
@@ -39,9 +42,10 @@ async def basic_auth(request: Request, call_next):
                         headers={'WWW-Authenticate': 'Basic realm="DLR WebUI"'})
 
 
-def _state_of(anchor: dict) -> dict:
+def _state_of(anchor: dict, tm: dict | None = None) -> dict:
     """把实时状态叠加到主播信息上。"""
-    tm = thread_map()
+    if tm is None:
+        tm = thread_map()
     rt = read_runtime()
     item = dict(anchor)
     thread = tm.get(norm_url(anchor['url']))
@@ -73,6 +77,7 @@ def _state_of(anchor: dict) -> dict:
         item['display_name'] = (anchor.get('name')
                                 or (f"{anchor.get('platform')} · {tail}" if tail else anchor.get('platform'))
                                 or '未命名')
+    item['last_live_at'] = anchor.get('last_live_at') or ''
     return item
 
 
@@ -111,9 +116,77 @@ def summary():
     }
 
 
+_LIVE_TOUCH: Dict[str, float] = {}
+
+
+def _touch_last_live(state: dict, tm: dict) -> None:
+    """主播正在直播/录制时记录时间，节流 120 秒，避免频繁写盘。"""
+    now = time.time()
+    changed = False
+    for a in state['anchors']:
+        t = tm.get(norm_url(a['url']))
+        if not t or t.get('status') not in ('live', 'recording'):
+            continue
+        if now - _LIVE_TOUCH.get(a['id'], 0) < 120:
+            continue
+        a['last_live_at'] = time.strftime('%Y-%m-%d %H:%M', time.localtime())
+        _LIVE_TOUCH[a['id']] = now
+        changed = True
+    if changed:
+        anchors_mod.save_state(state)
+
+
 @app.get('/api/anchors')
 def list_anchors():
-    return {'items': [_state_of(a) for a in anchors_mod.list_anchors()]}
+    state = anchors_mod.sync_from_file()
+    tm = thread_map()
+    _touch_last_live(state, tm)
+    return {'items': [_state_of(a, tm) for a in state['anchors']]}
+
+
+@app.get('/api/anchors/{anchor_id}/files')
+def anchor_files(anchor_id: str):
+    """某个主播名下的录像文件列表。"""
+    state = anchors_mod.sync_from_file()
+    anchor = next((a for a in state['anchors'] if a['id'] == anchor_id), None)
+    if not anchor:
+        raise HTTPException(status_code=404, detail='主播不存在')
+    tm = thread_map()
+    thread = tm.get(norm_url(anchor['url'])) or {}
+
+    names = []
+    if anchor.get('name'):
+        names.append(anchor['name'])
+    # 录制器实际使用抓取到的昵称（形如「序号1 小美」），去掉序号参与匹配
+    current = re.sub(r'^序号\d+\s*', '', (thread.get('name') or '').strip())
+    if current and current not in names:
+        names.append(current)
+
+    items = files_for_names(names)
+    return {
+        'anchor': _state_of(anchor, tm),
+        'names': names,
+        'items': items,
+        'count': len(items),
+        'total_size': sum(i['size'] for i in items),
+        'remux': media.ffmpeg_available(),
+    }
+
+
+@app.get('/api/media')
+def get_media(path: str = Query(..., description='相对 downloads 目录的文件路径')):
+    """播放/下载录像。ts、mkv、flv 会先无损转封装成 mp4 再返回。"""
+    try:
+        full = media.resolve(path)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    if not os.path.isfile(full):
+        raise HTTPException(status_code=404, detail='文件不存在')
+    try:
+        playable = full if media.can_play_directly(full) else media.remux_to_mp4(full)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=415, detail=str(exc))
+    return FileResponse(playable, media_type=media.media_type_for(playable))
 
 
 @app.post('/api/anchors')
