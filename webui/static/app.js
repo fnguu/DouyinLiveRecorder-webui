@@ -110,10 +110,10 @@
     const d = s.disk || {};
 
     $('#top-pills').innerHTML = `
-      <span class="pill"><i class="dot ${p.alive ? 'on' : 'off'}"></i>录制进程 <b>${p.alive ? '运行中' : '未运行'}</b></span>
-      <span class="pill">监测 <b>${p.monitoring || 0}</b></span>
-      <span class="pill">录制 <b>${p.recording || 0}</b></span>
-      <span class="pill">磁盘剩余 <b>${fmtSize(d.free)}</b></span>
+      <span class="pill pill-process"><i class="dot ${p.alive ? 'on' : 'off'}"></i>录制进程 <b>${p.alive ? '运行中' : '未运行'}</b></span>
+      <span class="pill pill-monitor">监测 <b>${p.monitoring || 0}</b></span>
+      <span class="pill pill-record">录制 <b>${p.recording || 0}</b></span>
+      <span class="pill pill-disk">磁盘剩余 <b>${fmtSize(d.free)}</b></span>
     `;
     $('#ver-text').textContent = p.version || 'v4.0.7';
     $('#nav-anchor-count').textContent = c.total || 0;
@@ -158,7 +158,7 @@
       }
       const files = data.items || [];
       $('#file-list').innerHTML = files.length ? files.map((f) => `
-        <div class="mini-item" title="${esc(f.path)}">
+        <div class="mini-item playable" data-path="${esc(f.path)}" data-name="${esc(f.name)}" title="点击播放">
           <svg viewBox="0 0 24 24" width="15" height="15" style="fill:var(--muted);flex:0 0 15px"><path d="M8 5v14l11-7z"/></svg>
           <span class="name">${esc(f.name)}</span>
           <span class="meta">${fmtSize(f.size)} · ${esc(f.mtime)}</span>
@@ -279,6 +279,7 @@
 
   // ------------------------------------------------------------ 弹窗
   function openModal({ title, body, footer, width = 480 }) {
+    stopPlayer();
     $('#modal-title').textContent = title;
     $('#modal-body').innerHTML = body;
     $('#modal-foot').innerHTML = footer;
@@ -462,6 +463,33 @@
     }
   }
 
+  function openPlayerModal(file) {
+    const name = file.name || '播放';
+    const ext = (name.split('.').pop() || '').toLowerCase();
+    const needRemux = ['ts', 'mkv', 'flv'].includes(ext);
+    const url = `/api/media?path=${encodeURIComponent(file.path)}`;
+    openModal({
+      title: name,
+      width: 960,
+      body: `<div class="player-wrap">
+          <video id="player" controls playsinline preload="metadata"></video>
+          <div class="player-meta">
+            <span class="player-file">${esc(name)}</span>
+            <span class="player-tip" id="player-tip"${needRemux ? '' : ' hidden'}>首次播放 ts / mkv 需要转封装，大文件请稍等几秒</span>
+          </div>
+        </div>`,
+      footer: `<a class="btn ghost" href="${url}" download="${esc(name)}">下载</a>
+               <button class="btn primary" onclick="__closeModal()">关闭</button>`,
+    });
+    const video = $('#player');
+    if (!video) return;
+    video.onerror = () => toast('这个文件无法在线播放，可以点「下载」后用本地播放器打开', 'err');
+    video.src = url;
+    video.load();
+    const p = video.play();
+    if (p && p.catch) p.catch(() => {});
+  }
+
   const EXT_LABEL = { ts: 'TS', mp4: 'MP4', mkv: 'MKV', flv: 'FLV', m4a: 'M4A', mp3: 'MP3', webm: 'WEBM', mov: 'MOV' };
 
   function renderFiles(data) {
@@ -482,10 +510,9 @@
           <div class="file-item" data-path="${esc(f.path)}" data-ext="${esc(f.ext)}" data-name="${esc(f.name)}">
             <span class="file-ext">${esc(EXT_LABEL[f.ext] || f.ext.toUpperCase())}</span>
             <span class="file-name" title="${esc(f.path)}">${esc(f.name)}</span>
-            <span class="file-size">${fmtSize(f.size)}</span>
-            <span class="file-time">${esc(f.mtime)}</span>
+            <span class="file-meta">${fmtSize(f.size)} · ${esc(f.mtime)}</span>
             <button class="btn primary file-play" data-act="play">播放</button>
-            <a class="icon-btn" href="/api/media?path=${encodeURIComponent(f.path)}" download="${esc(f.name)}" title="下载">
+            <a class="icon-btn file-dl" href="/api/media?path=${encodeURIComponent(f.path)}" download="${esc(f.name)}" title="下载">
               <svg viewBox="0 0 24 24"><path d="M12 16l-5-5h3V4h4v7h3l-5 5zM5 18h14v2H5z"/></svg>
             </a>
           </div>`).join('')}</div>`;
@@ -735,6 +762,15 @@
     $('#modal-mask').addEventListener('click', (e) => { if (e.target.id === 'modal-mask') closeModal(); });
     document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeModal(); });
     window.__closeModal = closeModal;
+
+    const fileList = $('#file-list');
+    if (fileList) {
+      fileList.addEventListener('click', (e) => {
+        const item = e.target.closest('.mini-item.playable');
+        if (!item) return;
+        openPlayerModal({ name: item.dataset.name, path: item.dataset.path });
+      });
+    }
 
     $('#anchor-search').addEventListener('input', (e) => {
       state.search = e.target.value;

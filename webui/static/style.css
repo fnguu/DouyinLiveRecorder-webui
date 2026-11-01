@@ -174,6 +174,11 @@ html[data-theme="dark"] .theme-toggle .icon-moon { display: none; }
   border-radius: 8px; font-size: 13px;
 }
 .mini-item:hover { background: var(--panel-2); }
+.mini-item.playable { cursor: pointer; }
+.mini-item.playable .name { transition: color .15s; }
+.mini-item.playable:hover .name { color: var(--accent); }
+.mini-item.playable svg { transition: fill .15s; }
+.mini-item.playable:hover svg { fill: var(--accent) !important; }
 .mini-item .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mini-item .meta { font-size: 11.5px; color: var(--muted); font-family: var(--mono); white-space: nowrap; }
 .mini-empty { color: var(--muted); font-size: 12.5px; padding: 14px 6px; }
@@ -456,10 +461,17 @@ html[data-theme="light"] .log-box { background: #12151b; }
 .files-summary { font-size: 12.5px; color: var(--muted); margin-bottom: 10px; }
 .file-items { display: flex; flex-direction: column; gap: 6px; }
 .file-item {
-  display: grid; grid-template-columns: 52px minmax(0, 1fr) 84px 132px 64px 30px;
+  display: grid;
+  grid-template-columns: 52px minmax(0, 1fr) 148px 64px 30px;
+  grid-template-areas: "ext name meta play dl";
   gap: 10px; align-items: center; padding: 8px 10px;
   border: 1px solid var(--border); border-radius: 10px; background: var(--panel-2);
 }
+.file-ext { grid-area: ext; }
+.file-name { grid-area: name; }
+.file-meta { grid-area: meta; }
+.file-play { grid-area: play; }
+.file-dl { grid-area: dl; }
 .file-item:hover { border-color: var(--border-strong); }
 .file-ext {
   font-size: 10.5px; font-weight: 600; text-align: center; padding: 2px 0;
@@ -467,7 +479,7 @@ html[data-theme="light"] .log-box { background: #12151b; }
 }
 .file-name { font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
 .file-name:hover { color: var(--accent); }
-.file-size, .file-time { font-size: 11.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.file-meta { font-size: 11.5px; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .btn.file-play { padding: 5px 12px; font-size: 12px; }
 .player-wrap { margin-bottom: 14px; border: 1px solid var(--border); border-radius: 12px; overflow: hidden; background: #000; }
 .player-wrap video { width: 100%; max-height: 46vh; display: block; background: #000; }
@@ -479,20 +491,92 @@ html[data-theme="light"] .log-box { background: #12151b; }
 #modal-body { max-height: 64vh; overflow-y: auto; }
 
 /* ---------------- responsive ---------------- */
+
+/* 小屏桌面 / 平板横屏 */
 @media (max-width: 1100px) {
   .stat-grid { grid-template-columns: repeat(2, 1fr); }
   .two-col { grid-template-columns: 1fr; }
   .field { grid-template-columns: 1fr; }
   .field-control { justify-self: stretch; }
 }
+
+/* 平板竖屏：主播表格改卡片式，取消横向滚动 */
+@media (max-width: 960px) {
+  .table-head { display: none; }
+  .anchor {
+    display: flex; flex-wrap: wrap; align-items: center;
+    gap: 8px 12px; min-width: 0; padding: 12px 14px;
+  }
+  .col-anchor { flex: 1 1 100%; }
+  .col-platform, .col-state, .col-time { flex: 0 0 auto; }
+  .anchor-controls { flex: 1 1 100%; justify-content: space-between; gap: 6px; margin-top: 2px; }
+  .toggle-bar { min-width: 82px; padding: 5px 7px 5px 10px; }
+  .anchor-actions { margin-left: auto; }
+}
+
+/* 小屏平板：侧栏收窄为图标 */
 @media (max-width: 860px) {
-  .sidebar { width: 64px; flex: 0 0 64px; padding: 14px 8px; }
+  .sidebar { width: 62px; flex: 0 0 62px; padding: 14px 6px; }
   .brand-text, .nav-item span, .nav-badge, .ver, .theme-toggle span { display: none; }
   .nav-item { justify-content: center; padding: 10px 0; }
-  .save-bar { left: 64px; padding: 12px 16px; }
+  .save-bar { left: 62px; padding: 12px 16px; }
   .scroll { padding: 16px; }
   .topbar { padding: 14px 16px; }
   .settings-layout { grid-template-columns: 1fr; }
   .settings-nav { position: static; flex-direction: row; overflow-x: auto; }
-  .table-head, .anchor { min-width: 880px; }
+  .settings-nav button { white-space: nowrap; }
+}
+
+/* 手机：侧栏变成顶部导航，整页滚动，任何区域都不需要左右滑动 */
+@media (max-width: 620px) {
+  .app { display: block; height: auto; overflow: visible; }
+  .sidebar {
+    width: 100%; flex: none; flex-direction: row; align-items: center; gap: 4px;
+    padding: 7px 10px; border-right: none; border-bottom: 1px solid var(--border);
+    position: sticky; top: 0; z-index: 30;
+  }
+  .brand { padding: 0 4px 0 0; gap: 6px; }
+  .brand-logo { width: 28px; height: 28px; border-radius: 8px; }
+  .nav { flex-direction: row; flex: 1; gap: 2px; overflow-x: auto; }
+  .nav-item { padding: 8px 10px; flex: 0 0 auto; }
+  .sidebar-foot { margin: 0; padding: 0; border: none; }
+  .theme-toggle { padding: 6px; border: none; }
+  .main { height: auto; min-height: 0; }
+  .topbar { flex-wrap: wrap; gap: 8px; padding: 12px 14px; }
+  .topbar h1 { font-size: 17px; }
+  .page-sub { display: none; }
+  .pills { width: 100%; gap: 6px; }
+  .pill { font-size: 11.5px; padding: 4px 8px; }
+  .pill-disk { display: none; }
+  .scroll { padding: 14px 12px 36px; overflow: visible; }
+  .stat-grid { gap: 10px; }
+  .stat { padding: 13px; }
+  .stat-value { font-size: 22px; }
+  .card { padding: 14px; }
+  .card-head { flex-wrap: wrap; gap: 4px; }
+  .toolbar { gap: 8px; }
+  .search { max-width: none; flex: 1 1 100%; }
+  .toolbar-actions { width: 100%; justify-content: flex-end; }
+  .btn { padding: 8px 12px; }
+  .field { padding: 12px 13px; }
+  .settings-nav { flex-wrap: wrap; overflow-x: visible; }
+  .mini-item .meta { max-width: 46%; overflow: hidden; text-overflow: ellipsis; }
+  .modal-mask { padding: 10px; }
+  #modal-body { max-height: 58vh; }
+  .modal-foot { padding: 12px 14px 14px; }
+  .file-item {
+    grid-template-columns: 40px minmax(0, 1fr) auto auto;
+    grid-template-areas:
+      "ext name play dl"
+      "ext meta play dl";
+    row-gap: 2px; column-gap: 8px; padding: 9px 10px;
+  }
+  .file-meta { white-space: normal; }
+  .player-wrap video { max-height: 34vh; }
+  .player-meta { flex-wrap: wrap; gap: 2px 10px; }
+  .player-tip { margin-left: 0; }
+  .log-box { height: calc(100vh - 300px); padding: 10px 12px; }
+  .save-bar { left: 0; right: 0; }
+  .toast-stack { left: 12px; right: 12px; top: 12px; }
+  .toast { max-width: none; }
 }
