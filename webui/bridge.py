@@ -14,6 +14,8 @@ _RUNTIME_FILE = os.environ.get('DLR_RUNTIME_FILE', '/tmp/dlr_runtime.json')
 _STATE_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                            'config', 'webui_state.json')
 
+_START_TS = time.time()
+
 _LOCK = threading.Lock()
 _THREADS = {}
 _STATE_CACHE = {'mtime': 0.0, 'map': None}
@@ -85,6 +87,7 @@ def flush(running=None, monitoring: int = 0, error_count: int = 0,
         threads = sorted(_THREADS.values(), key=lambda t: t.get('started', 0))
     payload = {
         'beat': time.time(),
+        'started_at': _START_TS,
         'pid': os.getpid(),
         'version': version,
         'monitoring': monitoring,

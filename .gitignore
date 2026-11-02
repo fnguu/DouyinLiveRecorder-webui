@@ -169,3 +169,6 @@ backup_config/
 # WebUI runtime state
 config/webui_state.json
 config/*.bak
+
+# 构建期生成
+build_info.json

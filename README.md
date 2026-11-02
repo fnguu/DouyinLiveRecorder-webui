@@ -12,6 +12,16 @@
 > ```
 >
 > 详细说明见 **[WEBUI.md](WEBUI.md)**，容器参数详解见下方「容器运行」章节。
+>
+> ---
+>
+> ### ⚠️ 关于本仓库的产出方式
+>
+> 本仓库的 **WebUI 前后端、容器化改造、部署配置与全部文档，均由 AI（WorkBuddy）生成**，
+> 人工只负责提出需求与验收。代码未经专业团队评审，请自行评估后使用。
+>
+> 录制核心逻辑来自上游 [ihmily/DouyinLiveRecorder](https://github.com/ihmily/DouyinLiveRecorder)，
+> 本仓库未改动其平台接口与流解析实现。
 
 ## 💡简介
 [![Python Version](https://img.shields.io/badge/python-3.11.6-blue.svg)](https://www.python.org/downloads/release/python-3116/)

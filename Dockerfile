@@ -35,6 +35,11 @@ RUN mkdir -p /app/config /app/logs /app/downloads /app/backup_config /run/dlr \
  && cp -a /app/config /app/config_default \
  && chmod +x /app/docker/entrypoint.sh
 
+# 构建信息：WebUI 的「系统状态」页会读取
+ARG BUILD_TIME=""
+ARG GIT_SHA=""
+RUN printf '{"build_time":"%s","git_sha":"%s"}' "${BUILD_TIME}" "${GIT_SHA}" > /app/build_info.json
+
 EXPOSE 8000
 VOLUME ["/app/config", "/app/downloads", "/app/logs"]
 

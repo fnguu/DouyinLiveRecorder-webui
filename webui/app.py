@@ -1,9 +1,13 @@
 # -*- encoding: utf-8 -*-
 """DouyinLiveRecorder WebUI 后端（FastAPI）。"""
 import base64
+import json
 import os
+import platform
 import re
 import secrets
+import shutil
+import subprocess
 import time
 from typing import Any, Dict, List, Optional
 
@@ -11,10 +15,11 @@ from fastapi import Body, FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+from . import __version__ as WEBUI_VERSION
 from . import anchors as anchors_mod
 from . import media
 from .config_io import read_ini
-from .paths import CONFIG_FILE, STATIC_DIR, ensure_dirs, norm_url
+from .paths import BASE_DIR, CONFIG_FILE, STATIC_DIR, ensure_dirs, norm_url
 from .runtime import disk_info, files_for_names, read_runtime, recent_files, tail_log, thread_map
 from .schema import build_schema, save_settings
 
@@ -263,6 +268,94 @@ def post_settings(payload: Dict[str, Any] = Body(...)):
     result = save_settings(items)
     result['schema'] = build_schema()
     return result
+
+
+_VER_CACHE: Dict[str, str] = {}
+
+
+def _tool_version(name: str, args: List[str]) -> str:
+    """取 ffmpeg / node 之类的版本号，结果缓存，避免每次请求都起子进程。"""
+    if name in _VER_CACHE:
+        return _VER_CACHE[name]
+    version = ''
+    exe = shutil.which(name)
+    if exe:
+        try:
+            out = subprocess.run([exe] + args, capture_output=True, text=True, timeout=5)
+            lines = (out.stdout or out.stderr).strip().splitlines()
+            if lines:
+                version = lines[0].strip()[:80]
+        except Exception:
+            version = ''
+    _VER_CACHE[name] = version
+    return version
+
+
+def _build_info() -> dict:
+    path = os.path.join(BASE_DIR, 'build_info.json')
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _human_uptime(seconds: float) -> str:
+    seconds = int(max(seconds, 0))
+    d, rem = divmod(seconds, 86400)
+    h, rem = divmod(rem, 3600)
+    m, _ = divmod(rem, 60)
+    if d:
+        return f'{d} 天 {h} 小时'
+    if h:
+        return f'{h} 小时 {m} 分'
+    return f'{m} 分'
+
+
+@app.get('/api/system')
+def system_info():
+    """系统状态页用：版本、构建信息、运行环境、进程与磁盘。"""
+    rt = read_runtime()
+    ini = read_ini()
+    save_path = ini.get('录制设置', {}).get('直播保存路径(不填则默认)', '') or ''
+    build = _build_info()
+
+    started = float(rt.get('started_at') or 0)
+    uptime = time.time() - started if started else 0
+    threads = rt.get('threads', [])
+    recording = len([t for t in threads if t.get('status') == 'recording'])
+
+    return {
+        'webui_version': WEBUI_VERSION,
+        'app_version': rt.get('version', '') or '未运行',
+        'build': {
+            'time': build.get('build_time', ''),
+            'sha': build.get('git_sha', ''),
+        },
+        'process': {
+            'alive': rt.get('alive', False),
+            'pid': rt.get('pid', 0),
+            'updated_at': rt.get('updated_at', ''),
+            'monitoring': rt.get('monitoring', 0),
+            'recording': recording,
+            'error_count': rt.get('error_count', 0),
+            'uptime': _human_uptime(uptime) if started else '',
+            'uptime_seconds': int(uptime) if started else 0,
+        },
+        'env': {
+            'python': platform.python_version(),
+            'platform': platform.platform(terse=True),
+            'machine': platform.machine(),
+            'hostname': platform.node(),
+            'cpu': os.cpu_count() or 0,
+            'tz': time.tzname[0],
+            'ffmpeg': _tool_version('ffmpeg', ['-version']),
+            'node': _tool_version('node', ['-v']),
+        },
+        'disk': disk_info(save_path),
+        'save_path': save_path,
+    }
 
 
 @app.get('/api/logs')

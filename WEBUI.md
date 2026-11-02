@@ -3,6 +3,9 @@
 在原版 [DouyinLiveRecorder](https://github.com/ihmily/DouyinLiveRecorder) 上增加的容器版管理界面。
 不改录制核心逻辑、不改配置文件格式，网页里即可完成日常运维。
 
+> **产出说明**：本项目的 WebUI 前后端、容器化配置与文档**均由 AI（WorkBuddy）生成**，
+> 人工只负责需求描述与验收。录制核心沿用上游实现，未改动其平台接口与流解析逻辑。
+
 ![架构](https://img.shields.io/badge/base-v4.0.7-blue) ![python](https://img.shields.io/badge/python-3.11-blue) ![ui](https://img.shields.io/badge/WebUI-FastAPI%2B%E5%8E%9F%E7%94%9FJS-green)
 
 ---

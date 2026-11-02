@@ -85,7 +85,7 @@
     overview: ['概览', '录制进程与主播整体状态'],
     anchors: ['主播管理', '增删主播，单独控制录制与通知'],
     settings: ['全局设置', '对应 config/config.ini，保存后立即生效'],
-    logs: ['运行日志', '容器内录制进程的实时输出'],
+    logs: ['系统状态', '版本、构建信息、运行环境与实时日志'],
   };
 
   function switchView(view) {
@@ -96,7 +96,7 @@
     $('#page-title').textContent = title;
     $('#page-sub').textContent = sub;
     if (view === 'settings') { loadSettings(); }
-    if (view === 'logs') { loadLogs(); }
+    if (view === 'logs') { loadSystem(); loadLogs(); }
     if (view !== 'settings') { $('#save-bar').classList.remove('show'); }
     else if (state.dirty.size) { $('#save-bar').classList.add('show'); }
   }
@@ -701,6 +701,61 @@
     } catch (e) {
       toast(e.message, 'err');
       updateSaveBar();
+    }
+  }
+
+  // ------------------------------------------------------------ 系统状态
+  const fmtDT = (iso) => {
+    if (!iso) return '';
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return iso;
+    const p = (n) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+  };
+
+  function sysItem(key, valueHtml, sub, title) {
+    return `<div class="sys-item">
+      <span class="k">${esc(key)}</span>
+      <span class="v"${title ? ` title="${esc(title)}"` : ''}>${valueHtml}${sub ? `<em>${esc(sub)}</em>` : ''}</span>
+    </div>`;
+  }
+
+  function renderSystem(s) {
+    const p = s.process || {};
+    const env = s.env || {};
+    const b = s.build || {};
+    const d = s.disk || {};
+    const alive = !!p.alive;
+
+    const items = [
+      sysItem('录制进程',
+        `<i class="dot ${alive ? 'on' : 'off'}"></i>${alive ? '运行中' : '未运行'}`,
+        alive ? `PID ${p.pid}` : '', ''),
+      sysItem('监测 / 录制', `${p.monitoring || 0} / ${p.recording || 0}`,
+        p.error_count ? `错误 ${p.error_count}` : '', ''),
+      sysItem('程序版本', esc(s.app_version || '—'), '', ''),
+      sysItem('WebUI 版本', esc(s.webui_version || '—'), '', ''),
+      sysItem('构建时间', esc(fmtDT(b.time) || '—'), b.sha ? b.sha.slice(0, 7) : '', b.sha || ''),
+      sysItem('已运行', esc(p.uptime || '—'), '', ''),
+      sysItem('运行环境', esc(env.platform || '—'), env.python ? `Python ${env.python}` : '', env.platform || ''),
+      sysItem('主机', esc(env.hostname || '—'), `${env.cpu || 0} 核 · ${env.tz || ''}`, ''),
+      sysItem('ffmpeg', esc(env.ffmpeg || '未安装'), '', env.ffmpeg || ''),
+      sysItem('Node.js', esc(env.node || '未安装'), '', ''),
+      sysItem('磁盘可用', d.total ? fmtSize(d.free) : '—',
+        d.total ? `共 ${fmtSize(d.total)}` : '', ''),
+      sysItem('录像目录', esc(s.save_path || '/app/downloads'), '', s.save_path || ''),
+    ];
+    $('#sys-grid').innerHTML = items.join('');
+    $('#sys-heartbeat').textContent = p.updated_at ? `心跳 ${p.updated_at}` : '';
+  }
+
+  async function loadSystem() {
+    try {
+      const s = await api('/api/system');
+      state.system = s;
+      renderSystem(s);
+    } catch (e) {
+      $('#sys-grid').innerHTML = `<div class="mini-empty" style="padding:16px 4px">${esc(e.message)}</div>`;
     }
   }
 
