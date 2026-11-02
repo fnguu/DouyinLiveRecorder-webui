@@ -15,8 +15,8 @@ from fastapi import Body, FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import __version__ as WEBUI_VERSION
 from . import anchors as anchors_mod
+from . import version as webui_version
 from . import media
 from .config_io import read_ini
 from .paths import BASE_DIR, CONFIG_FILE, STATIC_DIR, ensure_dirs, norm_url
@@ -326,8 +326,11 @@ def system_info():
     threads = rt.get('threads', [])
     recording = len([t for t in threads if t.get('status') == 'recording'])
 
+    wv = webui_version.info()
     return {
-        'webui_version': WEBUI_VERSION,
+        'webui_version': wv['version'],
+        'webui_revision': wv['revision'],
+        'webui_history': wv['history'],
         'app_version': rt.get('version', '') or '未运行',
         'build': {
             'time': build.get('build_time', ''),

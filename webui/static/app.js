@@ -734,7 +734,8 @@
       sysItem('监测 / 录制', `${p.monitoring || 0} / ${p.recording || 0}`,
         p.error_count ? `错误 ${p.error_count}` : '', ''),
       sysItem('程序版本', esc(s.app_version || '—'), '', ''),
-      sysItem('WebUI 版本', esc(s.webui_version || '—'), '', ''),
+      sysItem('WebUI 版本', esc(s.webui_version || '—'),
+        s.webui_revision ? `第 ${s.webui_revision} 次修订` : '', ''),
       sysItem('构建时间', esc(fmtDT(b.time) || '—'), b.sha ? b.sha.slice(0, 7) : '', b.sha || ''),
       sysItem('已运行', esc(p.uptime || '—'), '', ''),
       sysItem('运行环境', esc(env.platform || '—'), env.python ? `Python ${env.python}` : '', env.platform || ''),
@@ -747,6 +748,23 @@
     ];
     $('#sys-grid').innerHTML = items.join('');
     $('#sys-heartbeat').textContent = p.updated_at ? `心跳 ${p.updated_at}` : '';
+
+    const box = $('#sys-history');
+    const list = $('#sys-history-list');
+    const hist = s.webui_history || [];
+    if (box && list) {
+      if (!hist.length) {
+        box.hidden = true;
+      } else {
+        box.hidden = false;
+        $('#sys-history-count').textContent = `最近 ${hist.length} 条`;
+        list.innerHTML = hist.map((h) => `<li>
+          <span class="rev">${esc(h.version)}</span>
+          <span class="date">${esc(h.date)}</span>
+          <span class="txt">${esc(h.title)}</span>
+        </li>`).join('');
+      }
+    }
   }
 
   async function loadSystem() {

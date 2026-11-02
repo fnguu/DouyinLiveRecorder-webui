@@ -230,6 +230,10 @@ supervisord
 
 **日志**：三个视图分别对应 `logs/recorder.log`（容器标准输出）、`logs/PlayURL.log`（开播/关播事件）、`logs/streamget.log`（调试）。
 
+**版本号**：WebUI 采用「基版本 + 修订号」，格式 `1.0.0.N`，N 是影响 WebUI 的改动次数（初版记为 1）。
+当前版本可在「系统状态 → 系统信息 → WebUI 版本」看到，下方「WebUI 更新记录」列出每次修订的内容。
+维护方式：改动后往 `webui/version.py` 的 `REVISIONS` 末尾追加一条，版本号自动取列表长度，不需要手改数字。
+
 ---
 
 ## 6. 实现原理与对原版的改动
