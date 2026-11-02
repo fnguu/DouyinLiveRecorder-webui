@@ -7,3 +7,4 @@ httpx[http2]>=0.28.1
 PyExecJS>=1.5.1
 websocket-client>=1.7.0
 protobuf>=4.25.0
+Brotli>=1.1.0

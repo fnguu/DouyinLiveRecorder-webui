@@ -37,3 +37,10 @@
 - 协议描述：事实性信息，已实测校验 —— 若存疑可自行替换
 
 三者都不会让本项目（MIT）承担 AGPL 义务。
+
+## B 站弹幕抓取（`src/danmaku_bili.py`）
+
+该模块为本项目自行实现，未复制 BililiveRecorder（Apache-2.0）的任何代码。
+协议细节（`room_init` 房号解析、`getDanmuInfo` 的 WBI 签名、WebSocket 16 字节帧头、
+zlib/brotli 递归拆包、op=2 心跳）来自公开接口与社区文档，并以 BililiveRecorder
+的输出格式（B 站弹幕 XML）作为兼容目标。若将来直接复用其代码，需同时保留其许可证与声明。

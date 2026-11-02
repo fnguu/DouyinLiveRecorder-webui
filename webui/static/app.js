@@ -198,7 +198,7 @@
         </div>
         <div class="col-platform">
           <span class="tag">${esc(a.platform || '其他')}</span>
-          ${a.danmaku !== false && /douyin\.com/i.test(a.url || '') ? '<span class="tag-dm" title="录制弹幕已开">弹</span>' : ''}
+          ${a.danmaku !== false && /douyin\.com|bilibili\.com/i.test(a.url || '') ? '<span class="tag-dm" title="录制弹幕已开">弹</span>' : ''}
         </div>
         <div class="col-state"><span class="badge ${esc(a.state)}">${live ? '<i class="dot live"></i>' : ''}${esc(badge)}</span></div>
         <div class="col-time">${esc(lastLive)}</div>
@@ -341,7 +341,7 @@
           <label class="switch"><input type="checkbox" id="f-notify" checked><i></i></label>
         </div>
         <div class="switch-row">
-          <span>同时录制弹幕<em class="row-hint">仅抖音，需在全局设置开启弹幕录制</em></span>
+          <span>同时录制弹幕<em class="row-hint">抖音 / B站，需在全局设置开启对应开关</em></span>
           <label class="switch"><input type="checkbox" id="f-danmaku" checked><i></i></label>
         </div>`,
       footer: `
@@ -397,7 +397,7 @@
           <label class="switch"><input type="checkbox" id="f-b-notify" checked><i></i></label>
         </div>
         <div class="switch-row">
-          <span>同时录制弹幕<em class="row-hint">仅抖音</em></span>
+          <span>同时录制弹幕<em class="row-hint">抖音 / B站</em></span>
           <label class="switch"><input type="checkbox" id="f-b-danmaku" checked><i></i></label>
         </div>`,
       footer: `
@@ -448,7 +448,7 @@
           </div>
         </div>
         <div class="switch-row">
-          <span>录制弹幕<em class="row-hint">仅抖音，与录像同时启停</em></span>
+          <span>录制弹幕<em class="row-hint">抖音 / B站，与录像同时启停</em></span>
           <label class="switch"><input type="checkbox" id="e-danmaku" ${a.danmaku === false ? '' : 'checked'}><i></i></label>
         </div>`,
       footer: `
@@ -518,7 +518,7 @@
     if (p && p.catch) p.catch(() => {});
   }
 
-  const EXT_LABEL = { ts: 'TS', mp4: 'MP4', mkv: 'MKV', flv: 'FLV', m4a: 'M4A', mp3: 'MP3', webm: 'WEBM', mov: 'MOV' };
+  const EXT_LABEL = { ts: 'TS', mp4: 'MP4', mkv: 'MKV', flv: 'FLV', m4a: 'M4A', mp3: 'MP3', webm: 'WEBM', mov: 'MOV', xml: 'XML', ass: 'ASS', srt: 'SRT', jsonl: 'JSONL' };
 
   function renderFiles(data) {
     const items = data.items || [];

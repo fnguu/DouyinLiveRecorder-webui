@@ -21,7 +21,7 @@
 | 实时状态 | 概览页显示录制进程心跳、监测数、正在录制数、磁盘剩余、最近录像文件 |
 | 主播列表 | 表格展示：主播 / 直播平台 / 状态 / 最后直播时间 / 操作 |
 | 录像回放 | 点主播名查看该主播的全部录像并在线播放，ts/mkv/flv 自动无损转封装，支持拖动进度条与下载 |
-| 弹幕录制 | 抖音直播可同时抓取弹幕（评论 / 礼物 / 进场 / 点赞 / 在线人数 / PK 比分），输出 jsonl、srt、ass，与录像同目录同名前缀 |
+| 弹幕录制 | 抖音、B站直播可同时抓取弹幕，输出 B 站弹幕格式 XML + ASS 字幕，与录像同目录同名前缀 |
 | 运行日志 | 网页直接看容器内运行输出 / 直播状态 / 调试日志，可自动刷新 |
 | 零停机 | 改设置、加主播都不需要重启容器 |
 
@@ -229,15 +229,21 @@ supervisord
 
 **录像回放**：点主播名进入录像列表。ts/mkv/flv 浏览器无法直接播放，后端会用容器内的 ffmpeg 以 `-c copy`无损转封装成 mp4 再返回（首次点击等几秒，之后走缓存秒开），进度条可拖动，也可以直接下载原文件。关闭播放窗口会立即停止播放与声音。
 
-**弹幕录制**：先在「全局设置 → 录制与保存 → 录制抖音弹幕」打开总开关，再在每个主播上勾选「同时录制弹幕」（添加时默认勾选，之后可在编辑里改）。录制开始会并行拉起一条 WebSocket 连接抓消息流，录制结束（含手动停止录制、容器 stop）时一起收尾，输出三个文件与录像同目录同前缀：
+**弹幕录制**：两个平台各自一个总开关，先到「全局设置 → 录制与保存」把要用的那个打开：
+
+| 开关 | 平台 | 说明 |
+| --- | --- | --- |
+| 录制抖音弹幕 | 抖音 | 走 webcast IM，需要容器内有 node（镜像已装） |
+| 录制B站弹幕 | B站 | 走 B 站自己的二进制协议；有 Cookie 更稳，部分房间匿名只能收到少量消息 |
+
+再在每个主播上勾选「录制弹幕」（添加/批量添加时默认勾选，之后可在编辑里改）。录制开始会并行拉起一条连接，录制结束（含手动停录、容器 stop）时一起收尾，输出两个文件与录像同目录同前缀：
 
 | 文件 | 内容 |
 | --- | --- |
-| `xxx.danmaku.jsonl` | 全字段原始消息，一行一条，适合二次分析 |
-| `xxx.danmaku.srt` | 标准字幕，播放器可直接挂载 |
-| `xxx.danmaku.ass` | ASS 字幕，可用 ffmpeg 烧进画面 |
+| `xxx.danmaku.xml` | B 站弹幕格式（BililiveRecorder 同款），播放器、DanmakuFactory 等工具通用 |
+| `xxx.danmaku.ass` | ASS 字幕，滚动弹幕按轨道排布，可直接挂载或用 ffmpeg 烧进画面 |
 
-在主播名 → 录像弹窗底部的「弹幕 / 字幕文件」里可以直接下载。目前只支持抖音；其它平台即使勾选也不会抓。
+XML 是边抓边写的，容器被强杀也只缺一个收尾标签，内容不丢；ASS 在收尾时一次性生成。在主播名 → 录像弹窗底部的「弹幕 / 字幕文件」里都能直接下载。
 
 **日志**：三个视图分别对应 `logs/recorder.log`（容器标准输出）、`logs/PlayURL.log`（开播/关播事件）、`logs/streamget.log`（调试）。
 
@@ -266,9 +272,11 @@ supervisord
 3. 推送前调用 `ui_notify_ok(url)`，实现按主播的推送开关。
 4. 主播列表为空且无交互终端时不再卡在 `input()`。
 5. `SIGTERM` 时先等待 ffmpeg 收尾（最长 15 秒）再退出，`docker stop` 不会损坏录像。
-6. 抖音分支缓存 `room_id`，`check_subprocess()` 在 ffmpeg 启动前拉起弹幕线程、录制结束时收尾；是否抓取由全局开关 + 主播上的 `danmaku` 开关（`ui_danmaku_ok`）共同决定。
+6. 抖音分支缓存 `room_id`，`check_subprocess()` 按平台选弹幕模块（抖音 / B站）并在 ffmpeg 启动前拉起线程、录制结束时收尾；是否抓取由全局开关 + 主播上的 `danmaku` 开关（`ui_danmaku_ok`）共同决定。
 
-弹幕抓取实现在 `src/danmaku.py`，走抖音 webcast IM 的 WebSocket：评论 / 表情 / 礼物 / 点赞 / 进场 / 关注 / 在线人数 / PK 比分，按 `offset` 对齐到录制起点写入 jsonl，再生成 srt / ass。握手签名由 `src/javascript/douyin_ws_sign.js`（字节跳动官方前端 SDK 的公开分发版本，来源与许可见 `THIRD_PARTY_NOTICE.md`）经 PyExecJS 计算，协议定义在 `src/protobuf/douyin.proto`。
+弹幕抓取分两个模块：`src/danmaku.py` 走抖音 webcast IM，`src/danmaku_bili.py` 走 B 站协议（`room_init` 解析房号 → `getDanmuInfo` 取 token（需 WBI 签名与 buvid3/4）→ wss 鉴权 → zlib/brotli 递归拆包 → 30 秒心跳），两者共用 `src/danmaku_store.py` 写 XML 与 ASS。
+
+抖音侧走 webcast IM 的 WebSocket：评论 / 表情 / 礼物 / 点赞 / 进场 / 关注 / 在线人数 / PK 比分，按 `offset` 对齐到录制起点写入 jsonl，再生成 srt / ass。握手签名由 `src/javascript/douyin_ws_sign.js`（字节跳动官方前端 SDK 的公开分发版本，来源与许可见 `THIRD_PARTY_NOTICE.md`）经 PyExecJS 计算，协议定义在 `src/protobuf/douyin.proto`。
 
 `config.ini` 采用按行原地改写，保留原有注释、顺序、空行与 BOM，不会像 `configparser.write()` 那样把文件重排。
 

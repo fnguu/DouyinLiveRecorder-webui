@@ -14,8 +14,7 @@
     - WebcastControlMessage         直播间状态(关播等)
 
 输出格式：
-    jsonl  逐行 JSON，全字段，适合二次分析
-    srt    标准字幕，播放时挂载
+    xml    B 站弹幕格式（BililiveRecorder 同款），播放器与弹幕工具通用，可挂载可转换
     ass    ASS 字幕，样式可控，可用 ffmpeg 烧进画面
 
 依赖：websocket-client、protobuf（已随 requirements 追加）
@@ -35,6 +34,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+from .danmaku_store import XmlWriter
 from .logger import logger
 
 JS_SIGN_PATH = Path(__file__).resolve().parent / 'javascript' / 'douyin_ws_sign.js'
@@ -267,19 +267,20 @@ def generate_ws_signature(wss_url: str) -> str:
     param = ','.join(f'{key}={wss_maps.get(key, "")}' for key in WS_SIGN_PARAMS)
     return _get_sign_ctx().call('get_sign', hashlib.md5(param.encode()).hexdigest())
 
-# 参与字幕生成的消息类型（其余只进 jsonl）
+# 参与字幕生成的消息类型（其余只保留在内存，不写 XML）
 #
 # 刻意排除了 member(进场) / like(点赞) / social(关注)：这几类量极大（实测一场里
 # 进场能占到六成以上），放进字幕会把真正的评论挤掉——顶部 4 行会被「XX进入直播间」
-# 刷满，观众说了什么反而看不到。它们仍完整保留在 jsonl 里，需要的话改这个常量即可。
+# 刷满，观众说了什么反而看不到。这两类消息不进 XML，也不进字幕；需要的话调这个常量即可。
 SUBTITLE_TYPES = ('chat', 'gift', 'emoji')
 
 # 每类消息用什么样式、前缀什么标记。礼物和表情单独一档，画面上一眼能认出来，
 # 否则它们混在普通评论里看不出区别。
-SUBTITLE_STYLES = {'gift': 'Gift', 'emoji': 'Emoji'}
+SUBTITLE_STYLES = {'gift': 'Gift', 'emoji': 'Emoji', 'sc': 'Gift'}
 SUBTITLE_PREFIX = {
     'gift': '【礼物】',
     'emoji': '【表情】',
+    'sc': '【醒目留言】',
     'like': '【点赞】',
     'member': '【进场】',
     'social': '【关注】',
@@ -292,16 +293,6 @@ def subtitle_text(record: dict) -> str:
     body = f"{record.get('user', '')}：{record.get('content', '')}" if record.get('type') != 'stats' \
         else record.get('content', '')
     return prefix + body
-
-
-def _fmt_srt_time(seconds: float) -> str:
-    if seconds < 0:
-        seconds = 0.0
-    h = int(seconds // 3600)
-    m = int(seconds % 3600 // 60)
-    s = int(seconds % 60)
-    ms = int(round(seconds * 1000) % 1000)
-    return f'{h:02d}:{m:02d}:{s:02d},{ms:03d}'
 
 
 def _fmt_ass_time(seconds: float) -> str:
@@ -450,35 +441,6 @@ def render_ass(records: list[dict], ass_path: str, max_lines: int = 4, duration:
     return len(events), dropped + filtered
 
 
-def render_ass_from_jsonl(jsonl_path: str, ass_path: str, max_lines: int = 4, duration: float = 5.0,
-                          mode: str = 'scroll', playres: tuple[int, int] = (1920, 1080),
-                          types: tuple | list | None = None,
-                          gift_min_diamond: float = 0.0,
-                          font_size: int = SUBTITLE_FONT_SIZE) -> tuple[int, int]:
-    """按指定分辨率从 jsonl 重新渲染 ASS。
-
-    录像分辨率不一定是 1080p（抖音竖屏直播很常见），对着不分大小写的画面直接套
-    固定分辨率的 ASS 会让字幕拉变形，所以烧录前按实际宽高重渲一遍。
-    """
-    allowed = tuple(types) if types else SUBTITLE_TYPES
-    records = []
-    if os.path.exists(jsonl_path):
-        with open(jsonl_path, 'r', encoding='utf-8') as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    record = json.loads(line)
-                except Exception:
-                    continue
-                if record.get('type') in allowed:
-                    records.append(record)
-    records.sort(key=lambda r: r.get('offset', 0))
-    return render_ass(records, ass_path, max_lines, duration, mode, playres,
-                      font_size=font_size, types=allowed, gift_min_diamond=gift_min_diamond)
-
-
 def clean_base_path(save_file_path: str) -> str:
     """从 ffmpeg 输出路径推出弹幕文件的公共前缀。
 
@@ -494,7 +456,7 @@ class DanmakuRecorder:
     """单个直播间的弹幕抓取器，运行在独立线程里。"""
 
     def __init__(self, room_id: str, save_file_path: str, anchor_name: str = '',
-                 cookie: Optional[str] = None, formats=('json',),
+                 cookie: Optional[str] = None, formats=('xml', 'ass'),
                  proxy: Optional[str] = None, sync_start: Optional[datetime] = None,
                  subtitle_max_lines: int = 4, subtitle_duration: float = 5.0,
                  subtitle_mode: str = 'scroll', playres: tuple[int, int] = (1920, 1080),
@@ -502,7 +464,7 @@ class DanmakuRecorder:
                  subtitle_font_size: int = SUBTITLE_FONT_SIZE):
         self.room_id = str(room_id)
         self.anchor_name = anchor_name or self.room_id
-        self.formats = [f.strip().lower() for f in formats if f.strip()] or ['json']
+        self.formats = [f.strip().lower() for f in formats if f.strip()] or ['xml', 'ass']
         self.cookie = cookie or get_default_cookie()
         self.proxy = proxy
         self.sync_start = sync_start
@@ -523,16 +485,16 @@ class DanmakuRecorder:
             self.subtitle_font_size = SUBTITLE_FONT_SIZE
         self.base_path = clean_base_path(save_file_path)
 
-        self.jsonl_path = f'{self.base_path}.danmaku.jsonl'
-        self.srt_path = f'{self.base_path}.danmaku.srt'
+        self.xml_path = f'{self.base_path}.danmaku.xml'
         self.ass_path = f'{self.base_path}.danmaku.ass'
 
         self._stop_event = threading.Event()
         self._ws_host = WS_HOSTS[0]
         self._lock = threading.Lock()
         self._buffer: list[dict] = []
+        self._records: list[dict] = []  # 全量消息，收尾时用来渲染 ASS
         self._last_flush = 0.0
-        self._fh = None
+        self._xml = None
         self._ws = None
         self._internal_ext = ''
         self._base_time: Optional[datetime] = None  # 无 sync_start 时作为时间轴基准
@@ -550,10 +512,13 @@ class DanmakuRecorder:
             logger.warning(f'弹幕抓取未启动：protobuf 模块未就绪 -> {_PB_IMPORT_ERROR}')
             return False
         os.makedirs(os.path.dirname(self.base_path) or '.', exist_ok=True)
+        if 'xml' in self.formats:
+            self._xml = XmlWriter(self.xml_path, self.room_id)
         self._stop_event.clear()
         self._thread = threading.Thread(target=self._run, name=f'danmaku_{self.room_id}', daemon=True)
         self._thread.start()
-        logger.info(f'{self.anchor_name} 弹幕抓取已启动，保存至 {self.jsonl_path}')
+        target = self.xml_path if 'xml' in self.formats else self.ass_path
+        logger.info(f'{self.anchor_name} 弹幕抓取已启动，保存至 {target}')
         return True
 
     def stop(self) -> None:
@@ -566,14 +531,12 @@ class DanmakuRecorder:
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=10)
         self._flush(force=True)
-        if self._fh:
-            try:
-                self._fh.close()
-            except Exception:
-                pass
-            self._fh = None
+        if self._xml:
+            self._xml.close()
+            self._xml = None
         self._write_subtitles()
-        logger.info(f'{self.anchor_name} 弹幕抓取已停止，共 {self.count} 条 -> {self.jsonl_path}')
+        target = self.xml_path if 'xml' in self.formats else self.ass_path
+        logger.info(f'{self.anchor_name} 弹幕抓取已停止，共 {self.count} 条 -> {target}')
 
     # ------------------------------------------------------------------ 连接与收包
 
@@ -898,6 +861,7 @@ class DanmakuRecorder:
         with self._lock:
             self.count += 1
             self._buffer.append(record)
+            self._records.append(record)
             now = time.time()
             if len(self._buffer) >= 20 or now - self._last_flush >= 5:
                 self._flush(force=True)
@@ -905,36 +869,16 @@ class DanmakuRecorder:
     def _flush(self, force: bool = False) -> None:
         if not self._buffer:
             return
-        if self._fh is None:
-            self._fh = open(self.jsonl_path, 'a', encoding='utf-8')
-        for record in self._buffer:
-            self._fh.write(json.dumps(record, ensure_ascii=False) + '\n')
+        if self._xml is not None:
+            self._xml.append(self._buffer, fsync=force)
         self._buffer.clear()
         self._last_flush = time.time()
-        try:
-            self._fh.flush()
-            if force:
-                os.fsync(self._fh.fileno())
-        except Exception:
-            pass
 
     def _read_records(self) -> list[dict]:
-        if not os.path.exists(self.jsonl_path):
-            return []
-        records = []
-        with open(self.jsonl_path, 'r', encoding='utf-8') as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    records.append(json.loads(line))
-                except Exception:
-                    continue
-        return records
+        return list(self._records)
 
     def _write_subtitles(self) -> None:
-        if 'srt' not in self.formats and 'ass' not in self.formats:
+        if 'ass' not in self.formats:
             return
         records = [r for r in self._read_records() if str(r.get('type') or '').lower() in self.subtitle_types]
         if not records:
@@ -952,25 +896,7 @@ class DanmakuRecorder:
             kept.append(r)
         if not kept:
             return
-        if 'srt' in self.formats:
-            self._write_srt(kept)
-        if 'ass' in self.formats:
-            self._write_ass(kept)
-
-    def _write_srt(self, records: list[dict]) -> None:
-        lines = []
-        display_duration = self.subtitle_duration
-        for index, r in enumerate(records, start=1):
-            start = r.get('offset', 0)
-            end = start + display_duration
-            text = subtitle_text(r)
-            lines.append(str(index))
-            lines.append(f'{_fmt_srt_time(start)} --> {_fmt_srt_time(end)}')
-            lines.append(text)
-            lines.append('')
-        with open(self.srt_path, 'w', encoding='utf-8') as f:
-            f.write('\n'.join(lines))
-        logger.debug(f'弹幕字幕已生成: {self.srt_path}')
+        self._write_ass(kept)
 
     def _write_ass(self, records: list[dict]) -> None:
         """生成 ASS 字幕。默认走滚动飘屏，多轨道并发，具体渲染见 render_ass。"""
@@ -1053,7 +979,7 @@ if __name__ == '__main__':
         sys.exit(1)
     logger.info(f'直播间: {anchor or room_id} (room_id={room_id})')
 
-    rec = DanmakuRecorder(room_id, args.out, anchor or room_id, formats=('json', 'srt', 'ass'))
+    rec = DanmakuRecorder(room_id, args.out, anchor or room_id, formats=('xml', 'ass'))
     if not rec.start():
         sys.exit(1)
     try:
@@ -1062,4 +988,4 @@ if __name__ == '__main__':
     except KeyboardInterrupt:
         pass
     rec.stop()
-    print(f'共抓取 {rec.count} 条 -> {rec.jsonl_path}')
+    print(f'共抓取 {rec.count} 条 -> {rec.xml_path}')

@@ -20,10 +20,11 @@ MEDIA_TYPES = {
     '.mp4': 'video/mp4', '.m4v': 'video/mp4', '.webm': 'video/webm',
     '.mov': 'video/quicktime', '.m4a': 'audio/mp4', '.mp3': 'audio/mpeg',
     '.srt': 'text/plain', '.ass': 'text/plain', '.jsonl': 'application/x-ndjson',
+    '.xml': 'text/xml',
 }
 
 # 弹幕 / 字幕：只下载，不做转封装
-DOWNLOAD_ONLY = {'.srt', '.ass', '.jsonl', '.vtt', '.txt'}
+DOWNLOAD_ONLY = {'.xml', '.srt', '.ass', '.jsonl', '.vtt', '.txt'}
 
 CACHE_DIR = os.path.join(tempfile.gettempdir(), 'dlr_media_cache')
 MAX_CACHE_BYTES = 6 * 1024 ** 3

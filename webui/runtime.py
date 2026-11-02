@@ -90,7 +90,7 @@ def tail_log(name: str = 'console', lines: int = 300) -> dict:
 
 MEDIA_EXTS = ('.ts', '.mp4', '.mkv', '.flv', '.m4a', '.mp3', '.mov', '.webm')
 # 弹幕与字幕产物（不能播放，只提供下载）
-SUBTITLE_EXTS = ('.srt', '.ass', '.jsonl')
+SUBTITLE_EXTS = ('.xml', '.srt', '.ass', '.jsonl')
 _NAME_STRIP = re.compile(r'[\\/:*?"<>|&#.。,， ~！·]')
 
 
