@@ -1994,7 +1994,9 @@ def read_config_value(config_parser: configparser.RawConfigParser, section: str,
 
 
 options = {"是": True, "否": False}
-config = configparser.RawConfigParser()
+# strict=False：同一节里出现重复键（历史上 configparser 重写导致的大小写变体、
+# 或用户手改）时不再直接抛 DuplicateOptionError 崩掉整个录制进程
+config = configparser.RawConfigParser(strict=False)
 language = read_config_value(config, '录制设置', 'language(zh_cn/en)', "zh_cn")
 skip_proxy_check = options.get(read_config_value(config, '录制设置', '是否跳过代理检测(是/否)', "否"), False)
 if language and 'en' not in language.lower():
