@@ -58,6 +58,10 @@ jobs:
             type=ref,event=tag
             type=sha,format=short
 
+      - name: Prepare build info
+        id: buildinfo
+        run: echo "time=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
       - name: Build and push
         uses: docker/build-push-action@v6
         with:
@@ -68,7 +72,7 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           platforms: ${{ github.event.inputs.platforms || 'linux/amd64' }}
           build-args: |
-            BUILD_TIME=${{ github.run_started_at }}
+            BUILD_TIME=${{ steps.buildinfo.outputs.time }}
             GIT_SHA=${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
