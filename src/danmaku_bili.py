@@ -266,7 +266,7 @@ class BiliDanmakuRecorder:
             return False
         os.makedirs(os.path.dirname(self.base_path) or '.', exist_ok=True)
         if 'xml' in self.formats:
-            self._xml = XmlWriter(self.xml_path, self.room_id)
+            self._xml = XmlWriter(self.xml_path, self.room_id, anchor_name=self.anchor_name)
         self._stop_event.clear()
         self._thread = threading.Thread(target=self._run, name=f'bili_danmaku_{self.room_id}', daemon=True)
         self._thread.start()
@@ -510,16 +510,17 @@ class BiliDanmakuRecorder:
             diamond = float(data.get('total_coin') or 0)
         except (TypeError, ValueError):
             diamond = 0.0
-        return self._pack('gift', data.get('timestamp'), uid, uname, f'{name} x{num}', diamond=diamond)
+        return self._pack('gift', data.get('timestamp'), uid, uname, f'{name} x{num}',
+                          diamond=diamond, gift_name=name, gift_count=num)
 
     def _super_chat(self, data: dict) -> Optional[dict]:
         info = data.get('user_info') or {}
         uname = info.get('uname') or ''
         uid = data.get('uid') or ''
         price = data.get('price') or 0
-        text = f'￥{price} {data.get("message") or ""}'.strip()
-        return self._pack('sc', data.get('start_time') or data.get('ts'), uid, uname, text,
-                          diamond=price)
+        # price 单独存 diamond，ASS 里用【醒目留言】前缀展示，XML 的 sc 标签带 price 属性
+        return self._pack('sc', data.get('start_time') or data.get('ts'), uid, uname,
+                          data.get('message') or '', diamond=price)
 
     def _interact(self, data: dict) -> Optional[dict]:
         # INTERACT_WORD_V2 的字段是 protobuf base64，取不到明文时退回 V1 结构

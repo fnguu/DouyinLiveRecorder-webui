@@ -514,7 +514,7 @@ class DanmakuRecorder:
             return False
         os.makedirs(os.path.dirname(self.base_path) or '.', exist_ok=True)
         if 'xml' in self.formats:
-            self._xml = XmlWriter(self.xml_path, self.room_id)
+            self._xml = XmlWriter(self.xml_path, self.room_id, anchor_name=self.anchor_name)
         self._stop_event.clear()
         self._thread = threading.Thread(target=self._run, name=f'danmaku_{self.room_id}', daemon=True)
         self._thread.start()
