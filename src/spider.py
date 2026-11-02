@@ -716,6 +716,55 @@ async def get_bilibili_stream_data(url: str, qn: str = '10000', platform: str = 
         headers['Cookie'] = cookies
 
     room_id = url.split('?')[0].rsplit('/', maxsplit=1)[1]
+
+    # 优先走 getRoomPlayInfo（v2）：这是网页播放器用的接口，qn 请求什么就给什么
+    # （原画 10000 需要登录 cookie，匿名最高只到蓝光 400）。
+    # 旧的 Room/playUrl 接口已取不到原画，实测请求 10000 也只会回超清 250，只作兜底。
+    params = {
+        "room_id": room_id,
+        "protocol": "0,1",
+        "format": "0,1,2",
+        "codec": "0,1,2",
+        "qn": qn,
+        "platform": "web",
+        "ptype": "8",
+        "dolby": "5",
+        "panorama": "1",
+        "hdr_type": "0,1"
+    }
+    api = f'https://api.live.bilibili.com/xlive/web-room/v2/index/getRoomPlayInfo?{urllib.parse.urlencode(params)}'
+    try:
+        json_str = await async_req(api, proxy_addr=proxy_addr, headers=headers)
+        json_data = json.loads(json_str)
+        data = json_data.get('data') or {}
+        if json_data.get('code') == 0 and data.get('live_status') and data.get('playurl_info'):
+            playurl_info = data['playurl_info']
+            format_list = playurl_info['playurl']['stream'][0]['format']
+            stream_data_list = format_list[0]['codec']
+            if stream_data_list:
+                # 每个 codec 是一档画质（current_qn 是它的真实画质），按画质降序，
+                # 请求的 qn 存在就精确选它；否则选不高于请求值的最高一档，再不行取最高档。
+                # qn: 30000=杜比 20000=4K 10000=原画 400=蓝光 250=超清 150=高清 80=流畅
+                sorted_stream_list = sorted(stream_data_list, key=itemgetter("current_qn"), reverse=True)
+                try:
+                    want = int(qn)
+                except (TypeError, ValueError):
+                    want = 10000
+                stream_data = sorted_stream_list[0]
+                for item in sorted_stream_list:
+                    if item.get('current_qn') == want:
+                        stream_data = item
+                        break
+                    if item.get('current_qn', 0) <= want:
+                        stream_data = item
+                        break
+                base_url = stream_data['base_url']
+                host = stream_data['url_info'][0]['host']
+                extra = stream_data['url_info'][0]['extra']
+                return host + base_url + extra
+    except Exception:
+        pass
+
     params = {
         'cid': room_id,
         'qn': qn,
@@ -729,41 +778,8 @@ async def get_bilibili_stream_data(url: str, qn: str = '10000', platform: str = 
             if 'd1--cn-gotcha' in i['url']:
                 return i['url']
         return json_data['data']['durl'][-1]['url']
-    else:
-        params = {
-            "room_id": room_id,
-            "protocol": "0,1",
-            "format": "0,1,2",
-            "codec": "0,1,2",
-            "qn": qn,
-            "platform": "web",
-            "ptype": "8",
-            "dolby": "5",
-            "panorama": "1",
-            "hdr_type": "0,1"
-        }
-
-        # 此接口因网页上有限制, 需要配置登录后的cookie才能获取最高画质
-        api = f'https://api.live.bilibili.com/xlive/web-room/v2/index/getRoomPlayInfo?{urllib.parse.urlencode(params)}'
-        json_str = await async_req(api, proxy_addr=proxy_addr, headers=headers)
-        json_data = json.loads(json_str)
-        if json_data['data']['live_status'] == 0:
-            print("The anchor did not start broadcasting.")
-            return
-        playurl_info = json_data['data']['playurl_info']
-        format_list = playurl_info['playurl']['stream'][0]['format']
-        stream_data_list = format_list[0]['codec']
-        sorted_stream_list = sorted(stream_data_list, key=itemgetter("current_qn"), reverse=True)
-        # qn: 30000=杜比 20000=4K 10000=原画 400=蓝光 250=超清 150=高清 80=流畅
-        video_quality_options = {'10000': 0, '400': 1, '250': 2, '150': 3, '80': 4}
-        qn_count = len(sorted_stream_list)
-        select_stream_index = min(video_quality_options[qn], qn_count - 1)
-        stream_data: dict = sorted_stream_list[select_stream_index]
-        base_url = stream_data['base_url']
-        host = stream_data['url_info'][0]['host']
-        extra = stream_data['url_info'][0]['extra']
-        m3u8_url = host + base_url + extra
-        return m3u8_url
+    print("The anchor did not start broadcasting.")
+    return
 
 @trace_error_decorator
 async def get_xhs_stream_url(url: str, proxy_addr: OptionalStr = None, cookies: OptionalStr = None) -> dict:

@@ -288,9 +288,10 @@ SUBTITLE_PREFIX = {
 
 
 def subtitle_text(record: dict) -> str:
-    """字幕里显示的单行文本（带类型前缀）。stats 类没有发言人也就会有这个分支。"""
+    """字幕里显示的单行文本。普通消息带发言人，格式：用户名:弹幕内容；
+    stats 类（在线人数）没有发言人，只显示内容本身。"""
     prefix = SUBTITLE_PREFIX.get(record.get('type'), '')
-    body = f"{record.get('user', '')}：{record.get('content', '')}" if record.get('type') != 'stats' \
+    body = f"{record.get('user', '')}:{record.get('content', '')}" if record.get('type') != 'stats' \
         else record.get('content', '')
     return prefix + body
 

@@ -299,10 +299,22 @@ class BiliDanmakuRecorder:
         session = _ensure_session()
         _apply_cookie(session, self.cookie)
         buvid = (_ctx.get('buvid3') or '')
+        # 登录 Cookie 必须带给 WebSocket：B 站对匿名连接（尤其机房 IP）经常
+        # 鉴权成功却不推任何消息，带登录态后才能稳定收到 DANMU_MSG。
         headers = [f'User-Agent: {UA}', 'Origin: https://live.bilibili.com',
                    f'Referer: https://live.bilibili.com/{self.room_id}']
-        if buvid:
-            headers.append(f'Cookie: buvid3={buvid}')
+        ws_cookie = f'buvid3={buvid}' if buvid else ''
+        if self.cookie:
+            ws_cookie = f'{self.cookie};{ws_cookie}' if ws_cookie else self.cookie
+        if ws_cookie:
+            headers.append(f'Cookie: {ws_cookie}')
+        # protover=3 的消息包是 brotli 压缩，缺库时降级到 protover=2（zlib）
+        protover = 3 if brotli is not None else 2
+        # 登录 uid：鉴权包里的 uid 应与 Cookie 的 DedeUserID 一致
+        uid = 0
+        m_uid = re.search(r'DedeUserID=(\d+)', self.cookie, re.I)
+        if m_uid:
+            uid = int(m_uid.group(1))
         targets = urls or [WS_FALLBACK]
         last_error = None
         for url in targets:
@@ -313,9 +325,9 @@ class BiliDanmakuRecorder:
                 last_error = exc
                 continue
             auth = {
-                'uid': int(self.uid) if str(self.uid).isdigit() else 0,
+                'uid': uid,
                 'roomid': int(self.room_id),
-                'protover': 3,
+                'protover': protover,
                 'platform': 'web',
                 'type': 2,
                 'key': token,
@@ -337,6 +349,12 @@ class BiliDanmakuRecorder:
                     continue
                 if not token:
                     logger.debug('B站弹幕未取到 token，匿名连接可能收不到消息；建议在设置里填 B 站 Cookie')
+                # B 站官方流程：鉴权成功后必须立刻发一次心跳，服务端才会开始推消息，
+                # 之后由心跳线程每 30 秒续上。
+                try:
+                    ws.send(self._packet(2))
+                except Exception as exc:
+                    logger.debug(f'B站弹幕首次心跳发送失败: {exc}')
                 logger.debug(f'B站弹幕已连接 {url}（room {self.room_id}）')
                 return ws
             except Exception as exc:
