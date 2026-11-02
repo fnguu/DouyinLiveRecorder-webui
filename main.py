@@ -1911,6 +1911,67 @@ t3.start()
 utils.remove_duplicate_lines(url_config_file)
 
 
+_config_write_lock = threading.Lock()
+
+
+def save_config_value_in_place(section: str, option: str, value: str) -> None:
+    """把缺失的配置项按键原位补进 config.ini。
+
+    这里绝对不能用 configparser.write()：
+      1. 它会把整个文件重排，注释、空行、原有顺序全部丢失；
+      2. 它的 optionxform 默认把键名转小写，「是否录制B站弹幕」会变成
+         「是否录制b站弹幕」，WebUI 那边按原名去找就找不到，界面上会多出一条
+         认不出来的配置项（大写键由 WebUI 再补一次，于是同一项出现两条）。
+    所以按行编辑：命中同名键（忽略大小写）就改值，否则插到该节末尾。
+    """
+    with _config_write_lock:
+        try:
+            with open(config_file, 'r', encoding=text_encoding, newline='') as f:
+                raw = f.read()
+        except OSError:
+            raw = ''
+        nl = '\r\n' if '\r\n' in raw else '\n'
+        lines = raw.split(nl)
+        if lines and lines[-1] == '':
+            lines.pop()
+
+        header = f'[{section}]'
+        start = next((i for i, line in enumerate(lines) if line.strip() == header), None)
+        entry = f'{option} = {value}'
+
+        if start is None:
+            if lines and lines[-1].strip():
+                lines.append('')
+            lines.extend([header, entry])
+        else:
+            end = len(lines)
+            for j in range(start + 1, len(lines)):
+                if lines[j].lstrip().startswith('['):
+                    end = j
+                    break
+            hit = None
+            for j in range(start + 1, end):
+                body = lines[j].strip()
+                if not body or body.startswith('#') or '=' not in body:
+                    continue
+                if body.split('=', 1)[0].strip().casefold() == option.casefold():
+                    hit = j
+                    break
+            if hit is not None:
+                lines[hit] = entry
+            else:
+                at = end
+                while at - 1 > start and not lines[at - 1].strip():
+                    at -= 1
+                lines.insert(at, entry)
+
+        try:
+            with open(config_file, 'w', encoding=text_encoding, newline='') as f:
+                f.write(nl.join(lines) + nl)
+        except OSError as err:
+            logger.error(f'写入配置项失败: {err}')
+
+
 def read_config_value(config_parser: configparser.RawConfigParser, section: str, option: str, default_value: Any) \
         -> Any:
     try:
@@ -1928,9 +1989,7 @@ def read_config_value(config_parser: configparser.RawConfigParser, section: str,
             config_parser.add_section('账号密码')
         return config_parser.get(section, option)
     except (configparser.NoSectionError, configparser.NoOptionError):
-        config_parser.set(section, option, str(default_value))
-        with open(config_file, 'w', encoding=text_encoding) as f:
-            config_parser.write(f)
+        save_config_value_in_place(section, option, str(default_value))
         return default_value
 
 
