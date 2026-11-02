@@ -31,8 +31,9 @@ XML 是边抓边写的：先写头部，每条弹幕立刻追加一行 `<d>`，�
 才补 `</i>`。所以中途断掉的文件只是缺收尾标签，绝大部分内容仍然可用——
 这一点和 BililiveRecorder 的做法一致，长直播不会因为一次崩溃丢掉整场弹幕。
 
-礼物和醒目留言写在独立的 <gift>/<sc> 标签里：播放器和转换工具只读 <d>，
-不会被礼物消息干扰；浏览器预览时则在单独的表格里展示。
+礼物/醒目留言/上舰写在独立的 <gift>/<sc>/<guard> 标签里：播放器和转换工具
+只读 <d>，不会被这些消息干扰；浏览器预览时则在单独的表格里展示。
+抖音没有 SC/上舰概念，生成的 XML 不带这两个板块（少两行无意义的 0 计数）。
 """
 import binascii
 import os
@@ -101,79 +102,122 @@ def _price_text(record: dict) -> str:
 
 # ---------------------------------------------------------------------- 内嵌样式
 # 照录播姬（BililiveRecorder）的思路：把 XSLT 样式表塞在 XML 里，
-# 浏览器打开时把 <d>/<gift>/<sc> 渲染成表格。注意整个字符串必须是合法 XML：
-# JS 里不能出现裸的 < 和 &。
+# 浏览器打开时把 <d>/<gift>/<sc>/<guard> 渲染成表格。注意整个字符串必须是
+# 合法 XML：JS 里不能出现裸的 < 和 &。
+#
+# sections 控制文件里有哪些板块：抖音没有 SC/上舰，就不生成对应表格。
 
-_STYLESHEET = (
-    '<z:stylesheet version="1.0" id="s" xml:id="s" xmlns:z="http://www.w3.org/1999/XSL/Transform">'
-    '<z:output method="html"/>'
-    '<z:template match="/">'
-    '<html><meta name="viewport" content="width=device-width"/>'
-    '<title>' + APP_NAME + ' 弹幕XML文件 - <z:value-of select="/i/RecordInfo/@name"/></title>'
-    '<style>body{margin:0}h1,h2,p,table{margin-left:5px}table{border-spacing:0}'
-    'td,th{border:1px solid grey;padding:1px}th{position:sticky;top:0;background:#4098de}'
-    'tr:hover{background:#d9f4ff}div{overflow:auto;max-height:80vh;max-width:100vw;width:fit-content}</style>'
-    '<h1><a href="' + REPO_URL + '">' + APP_NAME + '</a> 弹幕XML文件</h1>'
-    '<p>本文件自带样式，推荐使用 Chrome Firefox Edge 浏览器打开。</p>'
-    '<p>弹幕信息兼容 B 站直播弹幕 XML 格式，可用 DanmakuFactory 等工具转换成 ASS 字幕。</p>'
-    '<table>'
-    '<tr><td>版本</td><td><z:value-of select="/i/RecordInfo/@app_version"/></td></tr>'
-    '<tr><td>房间号</td><td><z:value-of select="/i/RecordInfo/@roomid"/></td></tr>'
-    '<tr><td>主播名</td><td><z:value-of select="/i/RecordInfo/@name"/></td></tr>'
-    '<tr><td>录制开始时间</td><td><z:value-of select="/i/RecordInfo/@start_time"/></td></tr>'
-    '<tr><td><a href="#d">弹幕</a></td><td>共<z:value-of select="count(/i/d)"/>条记录</td></tr>'
-    '<tr><td><a href="#gift">礼物</a></td><td>共<z:value-of select="count(/i/gift)"/>条记录</td></tr>'
-    '<tr><td><a href="#sc">SC</a></td><td>共<z:value-of select="count(/i/sc)"/>条记录</td></tr>'
-    '</table>'
-    '<h2 id="d">弹幕</h2>'
-    '<div id="dm"><table>'
-    '<tr><th>用户名</th><th>出现时间</th><th>用户ID</th><th>弹幕</th><th>参数</th></tr>'
-    '<z:for-each select="/i/d"><tr>'
-    '<td><z:value-of select="@user"/></td><td></td><td></td>'
-    '<td><z:value-of select="."/></td><td><z:value-of select="@p"/></td>'
-    '</tr></z:for-each>'
-    '</table></div>'
-    '<h2 id="gift">礼物</h2>'
-    '<div id="gf"><table>'
-    '<tr><th>用户名</th><th>出现时间</th><th>用户ID</th><th>礼物</th><th>数量</th><th>金额</th></tr>'
-    '<z:for-each select="/i/gift"><tr>'
-    '<td><z:value-of select="@user"/></td><td><z:value-of select="@ts"/></td>'
-    '<td><z:value-of select="@uid"/></td><td><z:value-of select="@giftname"/></td>'
-    '<td><z:value-of select="@giftcount"/></td><td><z:value-of select="@price"/></td>'
-    '</tr></z:for-each>'
-    '</table></div>'
-    '<h2 id="sc">SC</h2>'
-    '<div id="sct"><table>'
-    '<tr><th>用户名</th><th>出现时间</th><th>用户ID</th><th>内容</th><th>价格</th></tr>'
-    '<z:for-each select="/i/sc"><tr>'
-    '<td><z:value-of select="@user"/></td><td><z:value-of select="@ts"/></td>'
-    '<td><z:value-of select="@uid"/></td><td><z:value-of select="."/></td>'
-    '<td><z:value-of select="@price"/></td>'
-    '</tr></z:for-each>'
-    '</table></div>'
-    '<script>'
-    'Array.from(document.querySelectorAll("#dm tr")).slice(1).map(function(t){'
-    'var td=t.querySelectorAll("td");var p=td[4].textContent.split(",");'
-    'var a=parseFloat(p[0]);if(isNaN(a)){return;}'
-    'var h=Math.floor(a/3600);var m=Math.floor(a/60)%60;var s=a%60;'
-    'td[1].textContent=(h+"").padStart(2,"0")+":"+(m+"").padStart(2,"0")+":"+s.toFixed(3).padStart(6,"0");'
-    'td[2].textContent=p[6]||"";});'
-    '</script>'
-    '</html>'
-    '</z:template>'
-    '</z:stylesheet>'
-)
+_FULL_SECTIONS = ('d', 'gift', 'sc', 'guard')
 
 
-def xml_header(room_id, anchor_name='', start_time='', version=None) -> str:
+def _stylesheet(sections=_FULL_SECTIONS) -> str:
+    s = set(sections or _FULL_SECTIONS)
+    rows = [f'<tr><td><a href="#d">弹幕</a></td><td>共<z:value-of select="count(/i/d)"/>条记录</td></tr>']
+    if 'gift' in s:
+        rows.append('<tr><td><a href="#gift">礼物</a></td><td>共<z:value-of select="count(/i/gift)"/>条记录</td></tr>')
+    if 'sc' in s:
+        rows.append('<tr><td><a href="#sc">SC</a></td><td>共<z:value-of select="count(/i/sc)"/>条记录</td></tr>')
+    if 'guard' in s:
+        rows.append('<tr><td><a href="#guard">上舰</a></td><td>共<z:value-of select="count(/i/guard)"/>条记录</td></tr>')
+    meta_rows = ''.join(rows)
+
+    extra_tables = ''
+    if 'gift' in s:
+        extra_tables += (
+            '<h2 id="gift">礼物</h2>'
+            '<div id="gf"><table>'
+            '<tr><th>用户名</th><th>出现时间</th><th>用户ID</th><th>礼物</th><th>数量</th><th>金额</th></tr>'
+            '<z:for-each select="/i/gift"><tr>'
+            '<td><z:value-of select="@user"/></td><td><z:value-of select="@ts"/></td>'
+            '<td><z:value-of select="@uid"/></td><td><z:value-of select="@giftname"/></td>'
+            '<td><z:value-of select="@giftcount"/></td><td><z:value-of select="@price"/></td>'
+            '</tr></z:for-each>'
+            '</table></div>'
+        )
+    if 'sc' in s:
+        extra_tables += (
+            '<h2 id="sc">SC</h2>'
+            '<div id="sct"><table>'
+            '<tr><th>用户名</th><th>出现时间</th><th>用户ID</th><th>内容</th><th>价格</th></tr>'
+            '<z:for-each select="/i/sc"><tr>'
+            '<td><z:value-of select="@user"/></td><td><z:value-of select="@ts"/></td>'
+            '<td><z:value-of select="@uid"/></td><td><z:value-of select="."/></td>'
+            '<td><z:value-of select="@price"/></td>'
+            '</tr></z:for-each>'
+            '</table></div>'
+        )
+    if 'guard' in s:
+        extra_tables += (
+            '<h2 id="guard">上舰</h2>'
+            '<div id="gd"><table>'
+            '<tr><th>用户名</th><th>出现时间</th><th>用户ID</th><th>舰团</th><th>金额</th></tr>'
+            '<z:for-each select="/i/guard"><tr>'
+            '<td><z:value-of select="@user"/></td><td><z:value-of select="@ts"/></td>'
+            '<td><z:value-of select="@uid"/></td><td><z:value-of select="@guardname"/></td>'
+            '<td><z:value-of select="@price"/></td>'
+            '</tr></z:for-each>'
+            '</table></div>'
+        )
+
+    return (
+        '<z:stylesheet version="1.0" id="s" xml:id="s" xmlns:z="http://www.w3.org/1999/XSL/Transform">'
+        '<z:output method="html"/>'
+        '<z:template match="/">'
+        '<html><meta name="viewport" content="width=device-width"/>'
+        '<title>' + APP_NAME + ' 弹幕XML文件 - <z:value-of select="/i/RecordInfo/@name"/></title>'
+        '<style>body{margin:0}h1,h2,p,table{margin-left:5px}table{border-spacing:0}'
+        'td,th{border:1px solid grey;padding:1px}th{position:sticky;top:0;background:#4098de}'
+        'tr:hover{background:#d9f4ff}div{overflow:auto;max-height:80vh;max-width:100vw;width:fit-content}</style>'
+        '<h1><a href="' + REPO_URL + '">' + APP_NAME + '</a> 弹幕XML文件</h1>'
+        '<p>本文件自带样式，推荐使用 Chrome Firefox Edge 浏览器打开。</p>'
+        '<p>弹幕信息兼容 B 站直播弹幕 XML 格式，可用 DanmakuFactory 等工具转换成 ASS 字幕。</p>'
+        '<table>'
+        '<tr><td>版本</td><td><z:value-of select="/i/RecordInfo/@app_version"/></td></tr>'
+        '<tr><td>房间号</td><td><z:value-of select="/i/RecordInfo/@roomid"/></td></tr>'
+        '<tr><td>主播名</td><td><z:value-of select="/i/RecordInfo/@name"/></td></tr>'
+        '<tr><td>录制开始时间</td><td><z:value-of select="/i/RecordInfo/@start_time"/></td></tr>'
+        + meta_rows +
+        '</table>'
+        '<h2 id="d">弹幕</h2>'
+        '<div id="dm"><table>'
+        '<tr><th>用户名</th><th>出现时间</th><th>用户ID</th><th>弹幕</th><th>参数</th></tr>'
+        '<z:for-each select="/i/d"><tr>'
+        '<td><z:value-of select="@user"/></td><td></td><td></td>'
+        '<td><z:value-of select="."/></td><td><z:value-of select="@p"/></td>'
+        '</tr></z:for-each>'
+        '</table></div>'
+        + extra_tables +
+        '<script>'
+        'Array.from(document.querySelectorAll("#dm tr")).slice(1).map(function(t){'
+        'var td=t.querySelectorAll("td");var p=td[4].textContent.split(",");'
+        'var a=parseFloat(p[0]);if(isNaN(a)){return;}'
+        'var h=Math.floor(a/3600);var m=Math.floor(a/60)%60;var s=a%60;'
+        'td[1].textContent=(h+"").padStart(2,"0")+":"+(m+"").padStart(2,"0")+":"+s.toFixed(3).padStart(6,"0");'
+        'td[2].textContent=p[6]||"";});'
+        '</script>'
+        '</html>'
+        '</z:template>'
+        '</z:stylesheet>'
+    )
+
+
+def xml_header(room_id, anchor_name='', start_time='', version=None, sections=None) -> str:
     v = str(version or APP_VERSION)
+    s = tuple(sections) if sections else _FULL_SECTIONS
+    tags = 'd 为弹幕'
+    if 'gift' in s:
+        tags += ', gift 为礼物'
+    if 'sc' in s:
+        tags += ', sc 为醒目留言'
+    if 'guard' in s:
+        tags += ', guard 为上舰'
     return (
         '<?xml version="1.0" encoding="UTF-8"?>\n'
         '<?xml-stylesheet type="text/xsl" href="#s"?>\n'
         '<i>\n'
         f'  <!--\n{APP_NAME} {v}\n{REPO_URL}\n'
         '本文件的弹幕信息兼容 B 站直播弹幕 XML 格式，自带浏览器预览样式。\n'
-        'd 为弹幕, gift 为礼物, sc 为醒目留言。播放器与转换工具只读取 d 标签。\n'
+        f'{tags}。播放器与转换工具只读取 d 标签。\n'
         '-->\n'
         '  <chatserver>chat.bilibili.com</chatserver>\n'
         f'  <chatid>{esc(room_id)}</chatid>\n'
@@ -184,7 +228,7 @@ def xml_header(room_id, anchor_name='', start_time='', version=None) -> str:
         '  <source>k-v</source>\n'
         f'  <RecordInfo app_version="{esc(v)}" roomid="{esc(room_id)}"'
         f' name="{esc(anchor_name)}" start_time="{esc(start_time)}" />\n'
-        f'  <XmlStyle>{_STYLESHEET}</XmlStyle>\n'
+        f'  <XmlStyle>{_stylesheet(s)}</XmlStyle>\n'
     )
 
 
@@ -228,11 +272,22 @@ def sc_line(record: dict) -> str:
             f' price="{_price_text(record)}">{esc(record.get("content"))}</sc>\n')
 
 
+def guard_line(record: dict) -> str:
+    """一条上舰 -> 一行 <guard>（自闭合）。guardname 如 舰长/提督/总督。"""
+    return (f'  <guard ts="{_offset_text(record)}" user="{esc(record.get("user"))}"'
+            f' uid="{esc(_uid_text(record))}"'
+            f' guardname="{esc(record.get("guard_name") or record.get("gift_name") or "舰长")}"'
+            f' price="{_price_text(record)}"/>\n')
+
+
 class XmlWriter:
-    """增量写弹幕 XML。close() 之前文件始终是"未收尾"状态。"""
+    """增量写弹幕 XML。close() 之前文件始终是"未收尾"状态。
+
+    sections 控制头部样式里生成哪些板块（抖音没有 SC/上舰，只传 d+gift）。
+    """
 
     def __init__(self, path: str, room_id='0', anchor_name='', start_time=None,
-                 sync_existing: bool = False):
+                 sync_existing: bool = False, sections=None):
         self.path = path
         self.room_id = room_id
         self.count = 0
@@ -242,12 +297,12 @@ class XmlWriter:
         if mode == 'w':
             if not start_time:
                 start_time = datetime.now().astimezone().isoformat(timespec='seconds')
-            self._fh.write(xml_header(room_id, anchor_name, start_time))
+            self._fh.write(xml_header(room_id, anchor_name, start_time, sections=sections))
             self._fh.flush()
 
     def append(self, records: Iterable[dict], fsync: bool = False) -> int:
-        """按类型分派：chat/emoji 走 <d>，gift 走 <gift>，sc 走 <sc>。
-        返回本次写入的弹幕条数（礼物/SC 不计入弹幕数）。"""
+        """按类型分派：chat/emoji 走 <d>，gift 走 <gift>，sc 走 <sc>，guard 走 <guard>。
+        返回本次写入的弹幕条数（礼物/SC/上舰不计入弹幕数）。"""
         rows = []
         dm_count = 0
         for r in records:
@@ -257,6 +312,9 @@ class XmlWriter:
                 continue
             if rtype == 'sc':
                 rows.append(sc_line(r))
+                continue
+            if rtype == 'guard':
+                rows.append(guard_line(r))
                 continue
             if rtype not in ('chat', 'emoji'):
                 continue
@@ -296,8 +354,8 @@ class XmlWriter:
         self.close()
 
 
-def write_xml(records: Iterable[dict], path: str, room_id='0', anchor_name='') -> int:
+def write_xml(records: Iterable[dict], path: str, room_id='0', anchor_name='', sections=None) -> int:
     """一次性写完整个 XML（自测、补写时用）。"""
-    with XmlWriter(path, room_id, anchor_name) as w:
+    with XmlWriter(path, room_id, anchor_name, sections=sections) as w:
         w.append(records, fsync=True)
         return w.count

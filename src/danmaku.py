@@ -276,11 +276,14 @@ SUBTITLE_TYPES = ('chat', 'gift', 'emoji')
 
 # 每类消息用什么样式、前缀什么标记。礼物和表情单独一档，画面上一眼能认出来，
 # 否则它们混在普通评论里看不出区别。
-SUBTITLE_STYLES = {'gift': 'Gift', 'emoji': 'Emoji', 'sc': 'Gift'}
+# 注意：B 站弹幕的 ASS 渲染也复用 render_ass（见 danmaku_bili._write_ass），
+# 所以 sc(醒目留言)/guard(上舰) 的样式和前缀虽然抖音用不到，也要留在这里。
+SUBTITLE_STYLES = {'gift': 'Gift', 'emoji': 'Emoji', 'sc': 'Gift', 'guard': 'Gift'}
 SUBTITLE_PREFIX = {
     'gift': '【礼物】',
     'emoji': '【表情】',
     'sc': '【醒目留言】',
+    'guard': '【上舰】',
     'like': '【点赞】',
     'member': '【进场】',
     'social': '【关注】',
@@ -514,7 +517,9 @@ class DanmakuRecorder:
             return False
         os.makedirs(os.path.dirname(self.base_path) or '.', exist_ok=True)
         if 'xml' in self.formats:
-            self._xml = XmlWriter(self.xml_path, self.room_id, anchor_name=self.anchor_name)
+            # 抖音没有 SC/上舰，XML 头部样式不生成这两个板块
+            self._xml = XmlWriter(self.xml_path, self.room_id, anchor_name=self.anchor_name,
+                                  sections=('d', 'gift'))
         self._stop_event.clear()
         self._thread = threading.Thread(target=self._run, name=f'danmaku_{self.room_id}', daemon=True)
         self._thread.start()

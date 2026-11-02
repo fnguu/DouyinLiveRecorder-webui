@@ -65,7 +65,7 @@ WBI_MIXIN = [
 ]
 
 # 进字幕的消息类型。进场/点赞/关注量太大，默认只进 XML 之外的统计，不刷屏。
-SUBTITLE_TYPES = ('chat', 'gift', 'sc', 'emoji')
+SUBTITLE_TYPES = ('chat', 'gift', 'sc', 'guard', 'emoji')
 
 _sessions: dict = {}
 _sessions_lock = threading.Lock()
@@ -266,7 +266,8 @@ class BiliDanmakuRecorder:
             return False
         os.makedirs(os.path.dirname(self.base_path) or '.', exist_ok=True)
         if 'xml' in self.formats:
-            self._xml = XmlWriter(self.xml_path, self.room_id, anchor_name=self.anchor_name)
+            self._xml = XmlWriter(self.xml_path, self.room_id, anchor_name=self.anchor_name,
+                                  sections=('d', 'gift', 'sc', 'guard'))
         self._stop_event.clear()
         self._thread = threading.Thread(target=self._run, name=f'bili_danmaku_{self.room_id}', daemon=True)
         self._thread.start()
@@ -468,6 +469,8 @@ class BiliDanmakuRecorder:
                 rec = self._gift(data)
             elif base == 'SUPER_CHAT_MESSAGE':
                 rec = self._super_chat(data)
+            elif base in ('USER_TOAST_MSG', 'USER_TOAST_MSG_V2', 'GUARD_BUY'):
+                rec = self._guard(data)
             elif base == 'INTERACT_WORD_V2':
                 rec = self._interact(data)
             elif base == 'LIKE_INFO_V3_CLICK':
@@ -521,6 +524,30 @@ class BiliDanmakuRecorder:
         # price 单独存 diamond，ASS 里用【醒目留言】前缀展示，XML 的 sc 标签带 price 属性
         return self._pack('sc', data.get('start_time') or data.get('ts'), uid, uname,
                           data.get('message') or '', diamond=price)
+
+    # 上舰等级：1=总督 2=提督 3=舰长，金额单位是金瓜子（1000 ≈ 1 元）
+    GUARD_NAMES = {1: '总督', 2: '提督', 3: '舰长'}
+
+    def _guard(self, data: dict) -> Optional[dict]:
+        """上舰（开通舰长/提督/总督）。USER_TOAST_MSG 字段最全，GUARD_BUY 兜底。"""
+        level = data.get('guard_level') or 0
+        name = (data.get('role_name') or self.GUARD_NAMES.get(level) or '舰长')
+        uname = data.get('uname') or data.get('username') or ''
+        uid = data.get('uid') or ''
+        num = data.get('num') or 1
+        try:
+            price = float(data.get('price') or 0)
+        except (TypeError, ValueError):
+            price = 0.0
+        # GUARD_BUY 的 price 是金瓜子，USER_TOAST_MSG 的也一致，统一换算成元
+        if price >= 1000:
+            price = price / 1000.0
+        if not uname:
+            return None
+        return self._pack('guard', data.get('start_time') or data.get('ts'), uid, uname,
+                          f'开通 {name}' + (f' x{num}' if num and int(num) > 1 else ''),
+                          diamond=price, guard_name=name, gift_name=name,
+                          gift_count=num)
 
     def _interact(self, data: dict) -> Optional[dict]:
         # INTERACT_WORD_V2 的字段是 protobuf base64，取不到明文时退回 V1 结构
