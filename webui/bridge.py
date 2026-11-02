@@ -30,7 +30,8 @@ def _norm(url: str) -> str:
     return u.lower()
 
 
-def _notify_map() -> dict:
+def _anchor_map() -> dict:
+    """{归一化网址: {'notify':..., 'danmaku':...}}，按文件 mtime 缓存。"""
     try:
         mtime = os.path.getmtime(_STATE_FILE)
     except OSError:
@@ -42,7 +43,10 @@ def _notify_map() -> dict:
         with open(_STATE_FILE, 'r', encoding='utf-8') as f:
             data = json.load(f)
         for a in data.get('anchors', []):
-            result[_norm(a.get('url', ''))] = bool(a.get('notify', True))
+            result[_norm(a.get('url', ''))] = {
+                'notify': bool(a.get('notify', True)),
+                'danmaku': bool(a.get('danmaku', True)),
+            }
     except (OSError, ValueError):
         result = {}
     _STATE_CACHE.update(mtime=mtime, map=result)
@@ -51,14 +55,22 @@ def _notify_map() -> dict:
 
 def is_notify_enabled(url: str) -> bool:
     """单个主播是否允许推送。列表里没登记的一律放行。"""
-    m = _notify_map()
+    m = _anchor_map()
     if not m:
         return True
-    return m.get(_norm(url), True)
+    return bool((m.get(_norm(url)) or {}).get('notify', True))
+
+
+def is_danmaku_enabled(url: str) -> bool:
+    """单个主播是否录制弹幕。列表里没登记的一律放行（跟随全局开关）。"""
+    m = _anchor_map()
+    if not m:
+        return True
+    return bool((m.get(_norm(url)) or {}).get('danmaku', True))
 
 
 def is_anchor_known(url: str) -> bool:
-    m = _notify_map()
+    m = _anchor_map()
     return (not m) or (_norm(url) in m)
 
 

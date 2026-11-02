@@ -20,7 +20,8 @@ from . import version as webui_version
 from . import media
 from .config_io import read_ini
 from .paths import BASE_DIR, CONFIG_FILE, STATIC_DIR, ensure_dirs, norm_url
-from .runtime import disk_info, files_for_names, read_runtime, recent_files, tail_log, thread_map
+from .runtime import (assets_for_names, disk_info, files_for_names, read_runtime,
+                       recent_files, tail_log, thread_map)
 from .schema import build_schema, save_settings
 
 ensure_dirs()
@@ -168,12 +169,15 @@ def anchor_files(anchor_id: str):
         names.append(current)
 
     items = files_for_names(names)
+    assets = assets_for_names(names)
     return {
         'anchor': _state_of(anchor, tm),
         'names': names,
         'items': items,
         'count': len(items),
         'total_size': sum(i['size'] for i in items),
+        'assets': assets,
+        'asset_count': len(assets),
         'remux': media.ffmpeg_available(),
     }
 
@@ -187,6 +191,10 @@ def get_media(path: str = Query(..., description='相对 downloads 目录的文�
         raise HTTPException(status_code=400, detail=str(exc))
     if not os.path.isfile(full):
         raise HTTPException(status_code=404, detail='文件不存在')
+    if media.is_download_only(full):
+        # 弹幕 / 字幕：不转封装，直接作为附件下载
+        return FileResponse(full, media_type=media.media_type_for(full),
+                            filename=os.path.basename(full))
     try:
         playable = full if media.can_play_directly(full) else media.remux_to_mp4(full)
     except RuntimeError as exc:
@@ -204,6 +212,7 @@ def create_anchor(payload: Dict[str, Any] = Body(...)):
             enabled=bool(payload.get('enabled', True)),
             notify=bool(payload.get('notify', True)),
             note=payload.get('note', ''),
+            danmaku=bool(payload.get('danmaku', True)),
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
@@ -234,6 +243,7 @@ def batch(payload: Dict[str, Any] = Body(...)):
     text = str(payload.get('text', ''))
     enabled = bool(payload.get('enabled', True))
     notify = bool(payload.get('notify', True))
+    danmaku = bool(payload.get('danmaku', True))
     added, failed = [], []
     for raw in text.replace('\r', '\n').split('\n'):
         line = raw.strip().lstrip('#').strip()
@@ -249,7 +259,7 @@ def batch(payload: Dict[str, Any] = Body(...)):
                 name = p
                 break
         try:
-            added.append(anchors_mod.add_anchor(url, name=name, enabled=enabled, notify=notify))
+            added.append(anchors_mod.add_anchor(url, name=name, enabled=enabled, notify=notify, danmaku=danmaku))
         except ValueError as exc:
             failed.append({'line': raw.strip(), 'error': str(exc)})
     return {'ok': True, 'added': len(added), 'failed': failed}

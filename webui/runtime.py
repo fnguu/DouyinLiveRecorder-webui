@@ -89,6 +89,8 @@ def tail_log(name: str = 'console', lines: int = 300) -> dict:
 
 
 MEDIA_EXTS = ('.ts', '.mp4', '.mkv', '.flv', '.m4a', '.mp3', '.mov', '.webm')
+# 弹幕与字幕产物（不能播放，只提供下载）
+SUBTITLE_EXTS = ('.srt', '.ass', '.jsonl')
 _NAME_STRIP = re.compile(r'[\\/:*?"<>|&#.。,， ~！·]')
 
 
@@ -130,6 +132,63 @@ def recent_files(limit: int = 8) -> list:
         })
     files.sort(key=lambda x: x['mtime_ts'], reverse=True)
     return files[:limit]
+
+
+def _iter_assets(max_depth: int = 3):
+    """弹幕与字幕产物：与录像同目录、同名前缀。"""
+    if not os.path.isdir(DEFAULT_DOWNLOAD_DIR):
+        return
+    for root, _dirs, names in os.walk(DEFAULT_DOWNLOAD_DIR):
+        depth = root[len(DEFAULT_DOWNLOAD_DIR):].count(os.sep)
+        if depth > max_depth:
+            continue
+        for n in names:
+            if not n.lower().endswith(SUBTITLE_EXTS):
+                continue
+            p = os.path.join(root, n)
+            try:
+                st = os.stat(p)
+            except OSError:
+                continue
+            yield p, n, st
+
+
+def assets_for_names(names, limit: int = 200) -> list:
+    """某个主播的弹幕/字幕文件（srt / ass / jsonl）。"""
+    keys = []
+    for n in names or []:
+        k = clean_anchor_name(n)
+        if k and k not in keys:
+            keys.append(k)
+    if not keys:
+        return []
+
+    matched = []
+    for p, n, st in _iter_assets():
+        dir_name = clean_anchor_name(os.path.basename(os.path.dirname(p)) or '')
+        base = n
+        for ext in SUBTITLE_EXTS:
+            if base.lower().endswith(ext):
+                base = base[: -len(ext)]
+                break
+        base = base.replace('.danmaku', '')
+        stem = clean_anchor_name(base)
+        hit = dir_name in keys or any(
+            stem == k or stem.startswith(k + '_') or stem.startswith(k + '-') for k in keys
+        )
+        if not hit:
+            continue
+        matched.append({
+            'name': n,
+            'path': os.path.relpath(p, DEFAULT_DOWNLOAD_DIR).replace('\\', '/'),
+            'size': st.st_size,
+            'mtime': time.strftime('%Y-%m-%d %H:%M', time.localtime(st.st_mtime)),
+            'mtime_ts': st.st_mtime,
+            'ext': os.path.splitext(n)[1].lower().lstrip('.'),
+            'kind': 'danmaku' if '.danmaku' in n.lower() else 'subtitle',
+        })
+    matched.sort(key=lambda x: x['mtime_ts'], reverse=True)
+    return matched[:limit]
 
 
 def files_for_names(names, limit: int = 400) -> list:

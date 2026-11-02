@@ -19,7 +19,11 @@ NEED_REMUX = {'.ts', '.mkv', '.flv'}
 MEDIA_TYPES = {
     '.mp4': 'video/mp4', '.m4v': 'video/mp4', '.webm': 'video/webm',
     '.mov': 'video/quicktime', '.m4a': 'audio/mp4', '.mp3': 'audio/mpeg',
+    '.srt': 'text/plain', '.ass': 'text/plain', '.jsonl': 'application/x-ndjson',
 }
+
+# 弹幕 / 字幕：只下载，不做转封装
+DOWNLOAD_ONLY = {'.srt', '.ass', '.jsonl', '.vtt', '.txt'}
 
 CACHE_DIR = os.path.join(tempfile.gettempdir(), 'dlr_media_cache')
 MAX_CACHE_BYTES = 6 * 1024 ** 3
@@ -45,6 +49,10 @@ def ffmpeg_available() -> bool:
 
 def media_type_for(path: str) -> str:
     return MEDIA_TYPES.get(os.path.splitext(path)[1].lower(), 'application/octet-stream')
+
+
+def is_download_only(path: str) -> bool:
+    return os.path.splitext(path)[1].lower() in DOWNLOAD_ONLY
 
 
 def can_play_directly(path: str) -> bool:

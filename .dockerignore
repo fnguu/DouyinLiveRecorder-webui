@@ -3,6 +3,7 @@
 .github
 .dockerignore
 .venv
+.venv*
 .venv-test
 __pycache__
 **/__pycache__

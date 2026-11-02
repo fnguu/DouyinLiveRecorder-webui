@@ -62,7 +62,9 @@
     if (gb >= 1) return gb.toFixed(1) + ' GB';
     const mb = n / 1024 / 1024;
     if (mb >= 1) return mb.toFixed(0) + ' MB';
-    return (n / 1024).toFixed(0) + ' KB';
+    const kb = n / 1024;
+    if (kb >= 1) return kb.toFixed(0) + ' KB';
+    return Math.max(0, Math.round(n)) + ' B';
   };
 
   const PLATFORM_COLOR = {
@@ -194,7 +196,10 @@
             <div class="anchor-url" title="${esc(a.url)}">${esc(a.url)}</div>
           </div>
         </div>
-        <div class="col-platform"><span class="tag">${esc(a.platform || '其他')}</span></div>
+        <div class="col-platform">
+          <span class="tag">${esc(a.platform || '其他')}</span>
+          ${a.danmaku !== false && /douyin\.com/i.test(a.url || '') ? '<span class="tag-dm" title="录制弹幕已开">弹</span>' : ''}
+        </div>
         <div class="col-state"><span class="badge ${esc(a.state)}">${live ? '<i class="dot live"></i>' : ''}${esc(badge)}</span></div>
         <div class="col-time">${esc(lastLive)}</div>
         <div class="anchor-controls">
@@ -334,6 +339,10 @@
         <div class="switch-row">
           <span>开播时推送通知</span>
           <label class="switch"><input type="checkbox" id="f-notify" checked><i></i></label>
+        </div>
+        <div class="switch-row">
+          <span>同时录制弹幕<em class="row-hint">仅抖音，需在全局设置开启弹幕录制</em></span>
+          <label class="switch"><input type="checkbox" id="f-danmaku" checked><i></i></label>
         </div>`,
       footer: `
         <button class="btn ghost" onclick="__closeModal()">取消</button>
@@ -354,6 +363,7 @@
             quality: $('#f-quality').value,
             enabled: $('#f-enabled').checked,
             notify: $('#f-notify').checked,
+            danmaku: $('#f-danmaku').checked,
           },
         });
         closeModal();
@@ -385,6 +395,10 @@
         <div class="switch-row">
           <span>开播时推送通知</span>
           <label class="switch"><input type="checkbox" id="f-b-notify" checked><i></i></label>
+        </div>
+        <div class="switch-row">
+          <span>同时录制弹幕<em class="row-hint">仅抖音</em></span>
+          <label class="switch"><input type="checkbox" id="f-b-danmaku" checked><i></i></label>
         </div>`,
       footer: `
         <button class="btn ghost" onclick="__closeModal()">取消</button>
@@ -396,7 +410,12 @@
       try {
         const r = await api('/api/anchors/batch', {
           method: 'POST',
-          body: { text, enabled: $('#f-b-enabled').checked, notify: $('#f-b-notify').checked },
+          body: {
+            text,
+            enabled: $('#f-b-enabled').checked,
+            notify: $('#f-b-notify').checked,
+            danmaku: $('#f-b-danmaku').checked,
+          },
         });
         closeModal();
         toast(`成功添加 ${r.added} 个${r.failed && r.failed.length ? `，${r.failed.length} 个失败` : ''}`);
@@ -427,6 +446,10 @@
             <label>平台</label>
             <input class="input" value="${esc(a.platform)}" disabled>
           </div>
+        </div>
+        <div class="switch-row">
+          <span>录制弹幕<em class="row-hint">仅抖音，与录像同时启停</em></span>
+          <label class="switch"><input type="checkbox" id="e-danmaku" ${a.danmaku === false ? '' : 'checked'}><i></i></label>
         </div>`,
       footer: `
         <button class="btn ghost" onclick="__closeModal()">取消</button>
@@ -436,7 +459,12 @@
       try {
         await api(`/api/anchors/${a.id}`, {
           method: 'PATCH',
-          body: { name: $('#e-name').value.trim(), url: $('#e-url').value.trim(), quality: $('#e-quality').value },
+          body: {
+            name: $('#e-name').value.trim(),
+            url: $('#e-url').value.trim(),
+            quality: $('#e-quality').value,
+            danmaku: $('#e-danmaku').checked,
+          },
         });
         closeModal();
         toast('已保存');
@@ -518,6 +546,19 @@
           </div>`).join('')}</div>`;
     }
 
+    const assets = data.assets || [];
+    const assetsBlock = assets.length ? `
+      <details class="asset-box" open>
+        <summary>弹幕 / 字幕文件 <em>${assets.length} 个</em></summary>
+        <div class="asset-items">${assets.map((f) => `
+          <a class="asset-item" href="/api/media?path=${encodeURIComponent(f.path)}" download="${esc(f.name)}" title="${esc(f.path)}">
+            <span class="asset-ext">${esc((f.ext || '').toUpperCase())}</span>
+            <span class="asset-name">${esc(f.name)}</span>
+            <span class="asset-meta">${fmtSize(f.size)} · ${esc(f.mtime)}</span>
+            <svg viewBox="0 0 24 24"><path d="M12 16l-5-5h3V4h4v7h3l-5 5zM5 18h14v2H5z"/></svg>
+          </a>`).join('')}</div>
+      </details>` : '';
+
     const body = $('#files-body');
     body.innerHTML = `<div class="player-wrap" id="player-wrap" hidden>
         <video id="player" controls playsinline preload="metadata"></video>
@@ -525,7 +566,7 @@
           <span id="player-name"></span>
           <span class="player-tip" id="player-tip" hidden>首次播放 ts / mkv 需要转封装，大文件请稍等几秒</span>
         </div>
-      </div>` + list;
+      </div>` + list + assetsBlock;
 
     body.onclick = (e) => {
       const item = e.target.closest('.file-item');

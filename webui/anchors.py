@@ -153,6 +153,7 @@ def sync_from_file(state: dict | None = None) -> dict:
                 'quality': e['quality'],
                 'enabled': not e['commented'],
                 'notify': True,
+                'danmaku': True,
                 'platform': detect_platform(e['url']),
                 'note': '',
                 'added_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
@@ -191,7 +192,7 @@ def list_anchors() -> list:
 
 @_locked
 def add_anchor(url: str, name: str = '', quality: str = '', enabled: bool = True,
-               notify: bool = True, note: str = '') -> dict:
+               notify: bool = True, note: str = '', danmaku: bool = True) -> dict:
     url = (url or '').strip()
     if not url:
         raise ValueError('直播间地址不能为空')
@@ -212,6 +213,7 @@ def add_anchor(url: str, name: str = '', quality: str = '', enabled: bool = True
         'quality': quality or '',
         'enabled': bool(enabled),
         'notify': bool(notify),
+        'danmaku': bool(danmaku),
         'platform': detect_platform(url),
         'note': (note or '').strip(),
         'added_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
@@ -241,6 +243,8 @@ def update_anchor(anchor_id: str, payload: dict) -> dict:
         anchor['note'] = str(payload['note'] or '').strip()
     if 'notify' in payload:
         anchor['notify'] = bool(payload['notify'])
+    if 'danmaku' in payload:
+        anchor['danmaku'] = bool(payload['danmaku'])
     if 'enabled' in payload:
         anchor['enabled'] = bool(payload['enabled'])
     if 'quality' in payload and payload['quality']:
@@ -348,6 +352,12 @@ def notify_targets() -> dict:
     """给录制进程用：{norm_url: notify}"""
     state = load_state()
     return {norm_url(a['url']): bool(a.get('notify', True)) for a in state.get('anchors', [])}
+
+
+def danmaku_targets() -> dict:
+    """给录制进程用：{norm_url: 是否录制弹幕}"""
+    state = load_state()
+    return {norm_url(a['url']): bool(a.get('danmaku', True)) for a in state.get('anchors', [])}
 
 
 def _default_quality() -> str:

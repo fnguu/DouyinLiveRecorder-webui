@@ -27,7 +27,7 @@ from urllib.error import URLError, HTTPError
 from typing import Any
 import configparser
 import httpx
-from src import spider, stream
+from src import spider, stream, danmaku
 from src.proxy import ProxyDetector
 from src.utils import logger
 from src import utils
@@ -64,6 +64,10 @@ first_run = True
 not_record_list = []
 start_display_time = datetime.datetime.now()
 global_proxy = False
+# 抖音弹幕录制：配置在主循环读取，check_subprocess 里与 ffmpeg 并行启停
+danmaku_enabled = False
+danmaku_formats = 'json,srt,ass'
+danmaku_room_ids = {}
 recording_time_list = {}
 script_path = os.path.split(os.path.realpath(sys.argv[0]))[0]
 config_file = f'{script_path}/config/config.ini'
@@ -115,6 +119,16 @@ def ui_notify_ok(url: str) -> bool:
         return True
 
 
+def ui_danmaku_ok(url: str) -> bool:
+    """单个主播是否录制弹幕（在 WebUI 里逐个配置，未登记时跟随全局开关）。"""
+    if not webui_bridge:
+        return True
+    try:
+        return webui_bridge.is_danmaku_enabled(url)
+    except Exception:
+        return True
+
+
 def signal_handler(_signal, _frame):
     """容器 stop / kill 时先让 ffmpeg 安全收尾，避免录像文件损坏。"""
     global exit_recording
@@ -129,6 +143,11 @@ def signal_handler(_signal, _frame):
     deadline = time.time() + 15
     while time.time() < deadline and recording:
         time.sleep(0.5)
+    # 弹幕连接也要正常关闭，否则 jsonl 里最后一批消息会丢
+    try:
+        danmaku.stop_all_danmaku()
+    except Exception:
+        pass
     sys.exit(0)
 
 
@@ -492,6 +511,30 @@ def check_subprocess(record_name: str, record_url: str, ffmpeg_command: list, sa
     save_file_path = ffmpeg_command[-1]
     ui_mark(record_url, status='recording', name=record_name,
             file=os.path.basename(str(save_file_path)))
+
+    # 抖音弹幕：与 ffmpeg 录制并行，录制结束时一起收尾
+    danmaku_key = None
+    if danmaku_enabled and 'douyin.com' in record_url and ui_danmaku_ok(record_url):
+        _room_id = danmaku_room_ids.get(record_url)
+        if _room_id:
+            danmaku_key = str(save_file_path)
+            _formats = [f.strip().lower() for f in str(danmaku_formats).replace('，', ',').split(',') if f.strip()]
+            threading.Thread(
+                target=danmaku.start_danmaku,
+                kwargs={
+                    'room_id': _room_id,
+                    'save_file_path': danmaku_key,
+                    'anchor_name': record_name.split(' ', maxsplit=1)[-1],
+                    'cookie': dy_cookie,
+                    'formats': _formats or ['json'],
+                    'sync_start': datetime.datetime.now(),
+                },
+                name=f'danmaku_{record_name}',
+                daemon=True,
+            ).start()
+        elif danmaku_enabled:
+            logger.debug(f'[{record_name}] 未取到 room_id，跳过弹幕抓取')
+
     process = subprocess.Popen(
         ffmpeg_command, stdin=subprocess.PIPE, stderr=subprocess.STDOUT, startupinfo=get_startup_info(os_type)
     )
@@ -517,12 +560,18 @@ def check_subprocess(record_name: str, record_url: str, ffmpeg_command: list, sa
             else:
                 process.send_signal(signal.SIGINT)
             process.wait()
+            if danmaku_key:
+                danmaku.stop_danmaku(danmaku_key)
             ui_unmark(record_url)
             return True
         time.sleep(1)
 
     return_code = process.returncode
     stop_time = time.strftime('%Y-%m-%d %H:%M:%S')
+
+    # 弹幕必须先收尾：srt/ass 是在连接关闭时才落盘的
+    if danmaku_key:
+        danmaku.stop_danmaku(danmaku_key)
     if return_code == 0:
         if converts_to_mp4 and save_type == 'TS':
             if split_video_by_time:
@@ -665,6 +714,18 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
                                     url=record_url,
                                     proxy_addr=proxy_address,
                                     cookies=dy_cookie))
+                            if danmaku_enabled:
+                                # 弹幕 WebSocket 要的是 enter 接口返回的真实 room_id，
+                                # 网址里那串短数字（web_rid）直接连上去收不到消息
+                                try:
+                                    _rid = (json_data.get('id_str') or json_data.get('room_id')
+                                            or json_data.get('web_rid') or '')
+                                    if _rid:
+                                        danmaku_room_ids[record_url] = str(_rid)
+                                    else:
+                                        logger.warning(f'未取到直播间 room_id，本场不抓弹幕: {record_url}')
+                                except Exception:
+                                    pass
                             port_info = asyncio.run(
                                 stream.get_douyin_stream_url(json_data, record_quality, proxy_address))
 
@@ -1907,6 +1968,8 @@ while True:
     converts_to_h264 = options.get(read_config_value(config, '录制设置', 'mp4格式重新编码为h264', "否"), False)
     delete_origin_file = options.get(read_config_value(config, '录制设置', '追加格式后删除原文件', "否"), False)
     create_time_file = options.get(read_config_value(config, '录制设置', '生成时间字幕文件', "否"), False)
+    danmaku_enabled = options.get(read_config_value(config, '录制设置', '是否录制弹幕(是/否)', "否"), False)
+    danmaku_formats = read_config_value(config, '录制设置', '弹幕保存格式(逗号分隔)', "json,srt,ass")
     is_run_script = options.get(read_config_value(config, '录制设置', '是否录制完成后执行自定义脚本', "否"), False)
     custom_script = read_config_value(config, '录制设置', '自定义脚本执行命令', "") if is_run_script else None
     enable_proxy_platform = read_config_value(

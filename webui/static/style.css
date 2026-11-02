@@ -249,6 +249,13 @@ html[data-theme="dark"] .theme-toggle .icon-moon { display: none; }
 .col-anchor { display: flex; align-items: center; gap: 11px; min-width: 0; }
 .col-state { justify-self: start; }
 .col-time { font-size: 12.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.tag-dm {
+  display: inline-block; margin-left: 5px; padding: 0 4px;
+  font-size: 10px; line-height: 15px; border-radius: 4px;
+  color: var(--accent-text); background: var(--accent-soft);
+  vertical-align: middle;
+}
+.row-hint { font-style: normal; font-size: 11px; color: var(--muted); margin-left: 6px; }
 .anchor-name {
   background: none; border: none; padding: 0; cursor: pointer; text-align: left;
   font-size: 14px; font-weight: 600; color: var(--text); font-family: inherit;
@@ -548,6 +555,37 @@ html[data-theme="light"] .log-box { background: #12151b; }
 .player-tip { color: var(--muted); font-size: 11.5px; margin-left: auto; flex: 0 0 auto; }
 #modal-body { max-height: 64vh; overflow-y: auto; overflow-x: hidden; min-width: 0; }
 
+/* 弹幕 / 字幕文件 */
+.asset-box { margin-top: 14px; font-size: 12.5px; }
+.asset-box summary {
+  cursor: pointer; color: var(--muted); padding: 4px 0;
+  list-style: none; display: flex; align-items: center; gap: 6px;
+}
+.asset-box summary::-webkit-details-marker { display: none; }
+.asset-box summary::before {
+  content: ''; width: 0; height: 0; border-left: 5px solid currentColor;
+  border-top: 4px solid transparent; border-bottom: 4px solid transparent;
+  transition: transform .15s;
+}
+.asset-box[open] summary::before { transform: rotate(90deg); }
+.asset-box summary em { font-style: normal; font-size: 11px; opacity: .8; }
+.asset-items { display: flex; flex-direction: column; gap: 5px; margin-top: 6px; }
+.asset-item {
+  display: grid; grid-template-columns: 42px minmax(0, 1fr) 148px 18px;
+  gap: 10px; align-items: center; padding: 7px 10px;
+  border: 1px solid var(--border); border-radius: 9px; background: var(--panel-2);
+  color: var(--text); text-decoration: none;
+}
+.asset-item:hover { border-color: var(--border-strong); background: var(--panel); }
+.asset-ext {
+  font-size: 10px; font-weight: 600; text-align: center; padding: 2px 0;
+  color: var(--text-2); background: var(--panel); border: 1px solid var(--border); border-radius: 5px;
+}
+.asset-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.asset-meta { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.asset-item svg { width: 15px; height: 15px; fill: var(--muted); }
+.asset-item:hover svg { fill: var(--accent); }
+
 /* ---------------- responsive ---------------- */
 
 /* 小屏桌面 / 平板横屏 */
@@ -630,6 +668,11 @@ html[data-theme="light"] .log-box { background: #12151b; }
   .modal-mask { padding: 10px; }
   #modal-body { max-height: 58vh; }
   .modal-foot { padding: 12px 14px 14px; }
+  .asset-item { grid-template-columns: 38px minmax(0, 1fr) 18px; grid-template-areas: "ext name dl" "ext meta dl"; row-gap: 2px; }
+  .asset-ext { grid-area: ext; }
+  .asset-name { grid-area: name; }
+  .asset-meta { grid-area: meta; }
+  .asset-item svg { grid-area: dl; }
   .file-item {
     grid-template-columns: 40px minmax(0, 1fr) auto auto;
     grid-template-areas:
