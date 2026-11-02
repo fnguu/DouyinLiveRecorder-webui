@@ -1341,6 +1341,11 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
                                 user_agent = ("Mozilla/5.0 (Linux; Android 11; SAMSUNG SM-G973U) AppleWebKit/537.36 ("
                                               "KHTML, like Gecko) SamsungBrowser/14.2 Chrome/87.0.4280.141 Mobile "
                                               "Safari/537.36")
+                                # B 站 CDN 校验 UA：移动端 UA 拉 web 直播流会被拒(403)，
+                                # 必须用桌面浏览器 UA（配合 -headers 里的 Referer）
+                                if platform == 'B站直播':
+                                    user_agent = ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+                                                  '(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
 
                                 rw_timeout = "15000000"
                                 analyzeduration = "20000000"
