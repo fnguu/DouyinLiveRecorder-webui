@@ -14,6 +14,7 @@
 
 输出与抖音一致：`.danmaku.xml`（B 站弹幕格式，边抓边写）+ `.danmaku.ass`（收尾生成）。
 """
+import base64
 import hashlib
 import json
 import os
@@ -97,6 +98,63 @@ def _ts_to_ms(value) -> Optional[int]:
 def _mixin_key(img_key: str, sub_key: str) -> str:
     raw = img_key + sub_key
     return ''.join(raw[i] for i in WBI_MIXIN if i < len(raw))[:32]
+
+
+# ---------------------------------------------------------------------- protobuf
+# B 站新版礼物消息 SEND_GIFT_V2 的 data.pb 是一段 base64 的 protobuf。
+# 这里不引 .proto/.pb2（字段少、还要跟着客户端升级），直接解 wire format：
+# 只需要「按字段号取值」这一件事，几十行就够。
+
+def _pb_varint(buf: bytes, i: int) -> tuple:
+    shift = 0
+    val = 0
+    n = len(buf)
+    while i < n:
+        b = buf[i]
+        i += 1
+        val |= (b & 0x7F) << shift
+        if not b & 0x80:
+            return val, i
+        shift += 7
+    raise ValueError('protobuf varint 截断')
+
+
+def _pb_fields(raw: bytes) -> dict:
+    """{字段号: [原始值...]}，varint 转 int，长度域保留 bytes。"""
+    out: dict = {}
+    i = 0
+    n = len(raw)
+    while i < n:
+        key, i = _pb_varint(raw, i)
+        fno, wtype = key >> 3, key & 7
+        if wtype == 0:
+            val, i = _pb_varint(raw, i)
+        elif wtype == 1:
+            val = raw[i:i + 8]
+            i += 8
+        elif wtype == 2:
+            ln, i = _pb_varint(raw, i)
+            val = raw[i:i + ln]
+            i += ln
+        elif wtype == 5:
+            val = raw[i:i + 4]
+            i += 4
+        else:  # 3/4 是早已废弃的 group，出现就停
+            break
+        out.setdefault(fno, []).append(val)
+    return out
+
+
+def _pb_int(fields: dict, fno: int, default: int = 0) -> int:
+    v = (fields.get(fno) or [None])[0]
+    return v if isinstance(v, int) else default
+
+
+def _pb_str(fields: dict, fno: int, default: str = '') -> str:
+    v = (fields.get(fno) or [b''])[0]
+    if isinstance(v, bytes):
+        return v.decode('utf-8', 'ignore')
+    return default
 
 
 def _ensure_session():
@@ -467,6 +525,8 @@ class BiliDanmakuRecorder:
                 rec = self._danmu_msg(msg)
             elif base == 'SEND_GIFT':
                 rec = self._gift(data)
+            elif base == 'SEND_GIFT_V2':
+                rec = self._gift_v2(data)
             elif base == 'SUPER_CHAT_MESSAGE':
                 rec = self._super_chat(data)
             elif base in ('USER_TOAST_MSG', 'USER_TOAST_MSG_V2', 'GUARD_BUY'):
@@ -482,7 +542,11 @@ class BiliDanmakuRecorder:
         except Exception as exc:
             logger.debug(f'B站弹幕消息解析失败 {base}: {exc}')
         if rec:
-            self._append(rec)
+            if isinstance(rec, list):
+                for item in rec:
+                    self._append(item)
+            else:
+                self._append(rec)
 
     def _danmu_msg(self, msg: dict) -> Optional[dict]:
         info = msg.get('info') or []
@@ -515,6 +579,55 @@ class BiliDanmakuRecorder:
             diamond = 0.0
         return self._pack('gift', data.get('timestamp'), uid, uname, f'{name} x{num}',
                           diamond=diamond, gift_name=name, gift_count=num)
+
+    def _gift_v2(self, data: dict) -> list:
+        """SEND_GIFT_V2：访客（未登录/新版客户端）现在收的是这条，data.pb 是 protobuf。
+
+        实测结构（与 tiny-bilibili-ws 的 SendGiftV2Broadcast 一致）：
+            根:   1=uid(常被抹掉) 2=昵称 3=头像 8=粉丝团 10=礼物列表
+            礼物: 1=礼物ID 2=名称 3=数量 4=类型 5=单价 6=总金瓜子
+                  8=币种 9=交易ID 10=时间戳(秒) 11=动作
+        一个包可能含多个礼物项，所以返回列表。
+        """
+        pb_b64 = data.get('pb') or ''
+        if not pb_b64:
+            return []
+        try:
+            raw = base64.b64decode(pb_b64)
+            root = _pb_fields(raw)
+        except Exception as exc:
+            logger.debug(f'B站 SEND_GIFT_V2 解码失败: {exc}')
+            return []
+        uname = _pb_str(root, 2)
+        uid = _pb_int(root, 1)
+        recs = []
+        seen = set()  # 同一个包里常出现重复项（服务端重复下发），按 礼物ID+数量+时间戳 去重
+        items = root.get(10) or []
+        if not items:  # 少数版本把礼物字段直接放在根上
+            items = [raw]
+        for item in items:
+            if not isinstance(item, bytes):
+                continue
+            try:
+                f = _pb_fields(item)
+            except Exception:
+                continue
+            name = _pb_str(f, 2)
+            if not name:
+                continue
+            num = _pb_int(f, 3, 1) or 1
+            ts = _pb_int(f, 10)
+            key = (_pb_int(f, 1), name, num, ts)
+            if key in seen:
+                continue
+            seen.add(key)
+            price = _pb_int(f, 5)
+            total = _pb_int(f, 6) or price * num
+            recs.append(self._pack(
+                'gift', ts or None, uid or '', uname,
+                f'{name} x{num}', diamond=total, gift_name=name, gift_count=num,
+            ))
+        return recs
 
     def _super_chat(self, data: dict) -> Optional[dict]:
         info = data.get('user_info') or {}
