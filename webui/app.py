@@ -16,6 +16,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import anchors as anchors_mod
+from . import auth
 from . import version as webui_version
 from . import media
 from .config_io import read_ini
@@ -41,24 +42,137 @@ except Exception as _exc:  # pragma: no cover
 
 app = FastAPI(title='DouyinLiveRecorder WebUI', docs_url='/api/docs', openapi_url='/api/openapi.json')
 
+# 兼容旧的单密码模式：设置了该环境变量时，HTTP Basic 仍可直接访问 API（供脚本/旧集成使用），
+# 日常浏览器访问走下面的用户名密码 + 长期会话。
 WEBUI_PASSWORD = os.environ.get('WEBUI_PASSWORD', '').strip()
+
+# 不需要登录就能访问的路径：页面本身、静态资源、健康检查、登录相关接口。
+# 页面放行是为了让前端能渲染「首次设置 / 登录」遮罩层，真正的数据接口仍然受保护。
+_PUBLIC_PATHS = {'/', '/index.html', '/favicon.ico', '/api/health'}
+_PUBLIC_PREFIXES = ('/static/', '/api/auth/')
+
+
+def _client_key(request: Request) -> str:
+    """限流用的客户端标识，优先取反向代理传来的真实 IP。"""
+    fwd = request.headers.get('x-forwarded-for', '')
+    ip = fwd.split(',')[0].strip() if fwd else ''
+    return ip or (request.client.host if request.client else 'unknown')
+
+
+def _basic_ok(request: Request) -> bool:
+    if not WEBUI_PASSWORD:
+        return False
+    header = request.headers.get('authorization', '')
+    if not header.startswith('Basic '):
+        return False
+    try:
+        decoded = base64.b64decode(header[6:]).decode('utf-8', 'ignore')
+        _user, _, pwd = decoded.partition(':')
+        return secrets.compare_digest(pwd, WEBUI_PASSWORD)
+    except Exception:
+        return False
+
+
+def _cookie_token(request: Request) -> str:
+    return request.cookies.get(auth.COOKIE_NAME, '') or ''
 
 
 @app.middleware('http')
-async def basic_auth(request: Request, call_next):
-    if not WEBUI_PASSWORD or request.url.path.startswith('/api/health'):
+async def auth_guard(request: Request, call_next):
+    path = request.url.path
+    if path in _PUBLIC_PATHS or path.startswith(_PUBLIC_PREFIXES):
         return await call_next(request)
-    header = request.headers.get('authorization', '')
-    if header.startswith('Basic '):
-        try:
-            decoded = base64.b64decode(header[6:]).decode('utf-8', 'ignore')
-            _user, _, pwd = decoded.partition(':')
-            if secrets.compare_digest(pwd, WEBUI_PASSWORD):
-                return await call_next(request)
-        except Exception:
-            pass
-    return JSONResponse({'detail': '需要登录'}, status_code=401,
-                        headers={'WWW-Authenticate': 'Basic realm="DLR WebUI"'})
+    if _basic_ok(request) or auth.verify_session(_cookie_token(request)):
+        return await call_next(request)
+    if path.startswith('/api/'):
+        return JSONResponse({'detail': '需要登录', 'auth_required': True}, status_code=401)
+    return await call_next(request)
+
+
+def _with_session(payload: dict, token: str, remember: bool = True) -> JSONResponse:
+    """返回 JSON 并下发会话 Cookie。
+
+    remember=True：持久 Cookie，180 天内免登录（使用中自动续期）；
+    remember=False：浏览器会话 Cookie，关掉浏览器即失效。
+    """
+    resp = JSONResponse(payload)
+    kwargs = {'httponly': True, 'samesite': 'lax', 'path': '/', 'secure': auth.COOKIE_SECURE}
+    if remember:
+        kwargs['max_age'] = auth.SESSION_DAYS * 86400
+    resp.set_cookie(auth.COOKIE_NAME, token, **kwargs)
+    return resp
+
+
+@app.get('/api/auth/status')
+def auth_status(request: Request):
+    info = auth.public_info()
+    token = _cookie_token(request)
+    logged_in = bool(token) and auth.verify_session(token)
+    info.update({
+        'logged_in': logged_in,
+        'expires_at': auth.expires_at(token) if logged_in else 0,
+        'password_env': bool(WEBUI_PASSWORD),
+    })
+    return info
+
+
+@app.post('/api/auth/setup')
+def auth_setup(request: Request, payload: Dict[str, Any] = Body(...)):
+    """首次设置用户名密码，成功后直接登录。"""
+    if auth.is_configured():
+        raise HTTPException(status_code=409, detail='已设置过用户名密码，请直接登录')
+    user = str(payload.get('username') or '')
+    pwd = str(payload.get('password') or '')
+    try:
+        auth.setup(user, pwd)
+        token = auth.login(user, pwd, request.headers.get('user-agent', ''))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f'无法写入账号文件，请检查 config 目录权限: {exc}')
+    return _with_session({'ok': True, 'username': auth.username()}, token)
+
+
+@app.post('/api/auth/login')
+def auth_login(request: Request, payload: Dict[str, Any] = Body(...)):
+    key = _client_key(request)
+    wait = auth.locked_for(key)
+    if wait:
+        raise HTTPException(status_code=429, detail=f'密码错误次数过多，请 {wait} 秒后再试')
+    if not auth.is_configured():
+        raise HTTPException(status_code=409, detail='尚未设置用户名密码，请先完成初始化')
+    try:
+        token = auth.login(str(payload.get('username') or ''), str(payload.get('password') or ''),
+                           request.headers.get('user-agent', ''),
+                           days=auth.SESSION_DAYS if payload.get('remember', True) else 1)
+    except ValueError as exc:
+        auth.note_failure(key)
+        raise HTTPException(status_code=401, detail=str(exc))
+    auth.clear_failures(key)
+    return _with_session({'ok': True, 'username': auth.username()}, token,
+                         remember=bool(payload.get('remember', True)))
+
+
+@app.post('/api/auth/logout')
+def auth_logout(request: Request):
+    auth.revoke(_cookie_token(request))
+    resp = JSONResponse({'ok': True})
+    resp.delete_cookie(auth.COOKIE_NAME, path='/')
+    return resp
+
+
+@app.post('/api/auth/password')
+def auth_password(request: Request, payload: Dict[str, Any] = Body(...)):
+    """修改密码：成功后其它设备的会话全部失效，当前会话保留。"""
+    token = _cookie_token(request)
+    if not auth.verify_session(token):
+        raise HTTPException(status_code=401, detail='需要登录')
+    try:
+        auth.change_password(str(payload.get('old_password') or ''),
+                             str(payload.get('new_password') or ''), keep_token=token)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {'ok': True, 'username': auth.username()}
 
 
 def _state_of(anchor: dict, tm: dict | None = None) -> dict:

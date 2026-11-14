@@ -15,6 +15,7 @@
 | 能力 | 说明 |
 | --- | --- |
 | 主播管理 | 网页添加 / 删除 / 批量粘贴导入，自动识别平台，备注名称、单独设置画质 |
+| 登录保护 | 首次访问设置用户名密码（PBKDF2 加盐存储），登录后长期保持（180 天自动续期），支持改密码与退出登录 |
 | 单主播录制开关 | 每个主播一个开关，关闭后**正在录制的视频会安全收尾**（ffmpeg 正常结束，不产生损坏文件） |
 | 单主播通知开关 | 单独控制该主播的开播 / 关播推送，不影响其它主播 |
 | 全部设置项 | 录制与保存、网络与代理、推送通知、平台账号、Cookie 凭证（50 个平台）共 119 个配置项，自动生成的表单，保存即写回 `config/config.ini` |
@@ -172,6 +173,7 @@ docker compose up -d
 ├── main.py                     # 原版录制主程序（含少量 WebUI 挂钩，见第 6 节）
 ├── webui/
 │   ├── app.py                  # FastAPI 应用与 REST 接口
+│   ├── auth.py                 # 登录认证：密码哈希、长期会话、限流
 │   ├── schema.py               # 设置项元数据（分组 / 控件类型 / 说明）
 │   ├── config_io.py            # config.ini 无损读写（保留注释、顺序、BOM）
 │   ├── anchors.py              # 主播列表：状态文件 + URL_config.ini 行级增删改
@@ -189,7 +191,8 @@ docker compose up -d
 └── config/
     ├── config.ini              # 全局设置（WebUI 原地修改）
     ├── URL_config.ini          # 主播列表（录制器唯一数据源）
-    └── webui_state.json        # WebUI 元数据：通知开关、备注、排序（自动生成）
+    ├── webui_state.json        # WebUI 元数据：通知开关、备注、排序（自动生成）
+    └── webui_auth.json         # 登录账号与会话（PBKDF2 哈希，权限 600，自动生成）
 ```
 
 容器内两个进程由 supervisor 托管，任一崩溃自动拉起：
@@ -207,7 +210,9 @@ supervisord
 | 变量 | 默认 | 说明 |
 | --- | --- | --- |
 | `WEBUI_PORT` | `8000` | WebUI 端口，改了记得同步 compose 的端口映射 |
-| `WEBUI_PASSWORD` | 空 | 设置后启用 HTTP Basic 认证，远程访问务必设置 |
+| `WEBUI_PASSWORD` | 空 | 可选。设置后额外启用 HTTP Basic（供脚本调 API）；日常访问用网页里的用户名密码登录 |
+| `DLR_COOKIE_SECURE` | 空 | 设为 `1` 时会话 Cookie 带 `Secure`，仅在用 HTTPS 反代访问时打开 |
+| `DLR_AUTH_FILE` | `config/webui_auth.json` | 登录账号文件位置，一般不用改 |
 | `TZ` | `Asia/Shanghai` | 时区，影响文件名时间戳 |
 | `HTTP_PROXY` / `HTTPS_PROXY` | 空 | 录制海外平台时用，宿主机代理写 `http://host.docker.internal:7890` |
 | `DLR_NO_CLEAR` | `1` | 容器内不清屏，日志按行输出（镜像已设） |
@@ -216,6 +221,14 @@ supervisord
 ---
 
 ## 5. 使用要点
+
+**登录与密码**：第一次打开网页会显示「设置登录账号」，填一个用户名和密码（至少 6 位）即可进入，之后所有数据接口都需要登录。账号信息保存在 `config/webui_auth.json`，密码是 PBKDF2-SHA256 加盐哈希，不存明文：
+
+- 登录时勾选「保持登录状态」，Cookie 有效期 180 天，**使用中会自动续期**（等于一直免登录）；不勾选则只维持到关闭浏览器。
+- 顶栏右侧显示当前用户名，点钥匙图标改密码（改完其它设备会被踢下线，当前设备保持登录），点箭头退出登录。
+- 忘记密码：删掉 `config/webui_auth.json` 后刷新页面，会重新进入首次设置流程（里面的主播配置不受影响）。
+- 连续输错 10 次密码，同一 IP 会被锁 10 分钟。
+- 旧的单密码方式仍然可用：设置环境变量 `WEBUI_PASSWORD` 后，脚本可以用 HTTP Basic 直接调 API。
 
 **添加主播**：粘贴浏览器里的直播间地址即可，支持短链。备注名留空则显示平台昵称（录制器抓到名字后自动补全）。
 

@@ -14,6 +14,9 @@
     logAuto: true,
     settingsGroup: '',
     lastAnchorKey: '',
+    auth: null,
+    authMode: 'login',
+    timers: [],
   };
 
   const $ = (sel, root = document) => root.querySelector(sel);
@@ -31,8 +34,11 @@
       body: opts.body ? JSON.stringify(opts.body) : undefined,
     });
     if (res.status === 401) {
-      toast('需要访问密码，请刷新页面后输入', 'err');
-      throw new Error('unauthorized');
+      let data = null;
+      try { data = await res.json(); } catch (e) { data = null; }
+      // 会话过期：直接回到登录页面，让用户重新输入密码
+      if (!path.startsWith('/api/auth/')) showAuth('login');
+      throw new Error((data && data.detail) || '需要登录');
     }
     let data = null;
     try { data = await res.json(); } catch (e) { data = null; }
@@ -956,22 +962,186 @@
     $('#log-auto').addEventListener('change', (e) => { state.logAuto = e.target.checked; });
   }
 
-  // ------------------------------------------------------------ 启动
-  function boot() {
-    const saved = localStorage.getItem('dlr-theme');
-    applyTheme(saved || (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'));
-    bind();
-    refresh();
+  // ------------------------------------------------------------ 登录 / 首次设置
+  function showAuthError(msg) {
+    const box = $('#auth-err');
+    box.textContent = msg || '';
+    box.hidden = !msg;
+  }
 
-    setInterval(() => {
+  function showAuth(mode) {
+    state.authMode = mode === 'setup' ? 'setup' : 'login';
+    const setup = state.authMode === 'setup';
+    $('#auth-title').textContent = setup ? '设置登录账号' : '登录控制台';
+    $('#auth-sub').textContent = setup
+      ? '首次使用，请设置一个用户名和密码（密码至少 6 位）'
+      : '请输入用户名和密码继续';
+    $('#auth-confirm-field').hidden = !setup;
+    $('#auth-remember-row').hidden = setup;
+    $('#auth-submit').textContent = setup ? '创建并进入' : '登录';
+    $('#auth-password').setAttribute('autocomplete', setup ? 'new-password' : 'current-password');
+    $('#auth-password').value = '';
+    $('#auth-confirm').value = '';
+    $('#auth-submit').disabled = false;
+    showAuthError('');
+    stopTimers();
+    $('#auth-gate').hidden = false;
+    $('#app-root').hidden = true;
+    setTimeout(() => {
+      const target = setup ? $('#auth-username') : ($('#auth-username').value ? $('#auth-password') : $('#auth-username'));
+      target && target.focus();
+    }, 80);
+  }
+
+  function hideAuth() {
+    $('#auth-gate').hidden = true;
+    $('#app-root').hidden = false;
+  }
+
+  function renderUserChip(info) {
+    const name = (info && info.username) || '';
+    const chip = $('#user-chip');
+    if (!name) { chip.hidden = true; return; }
+    chip.hidden = false;
+    $('#user-name').textContent = name;
+    $('#user-avatar').textContent = name.slice(0, 1).toUpperCase();
+    chip.title = info.expires_at
+      ? `登录有效期至 ${new Date(info.expires_at * 1000).toLocaleDateString()}`
+      : '已登录';
+  }
+
+  async function checkAuth() {
+    let info = null;
+    try {
+      const res = await fetch('/api/auth/status', { headers: { 'Content-Type': 'application/json' } });
+      info = await res.json();
+    } catch (e) { info = null; }
+    if (!info) {
+      showAuth('login');
+      showAuthError('无法连接后端服务，请检查容器是否正常运行');
+      return;
+    }
+    state.auth = info;
+    if (!info.configured) { showAuth('setup'); return; }
+    if (!info.logged_in) { showAuth('login'); return; }
+    renderUserChip(info);
+    hideAuth();
+    startApp();
+  }
+
+  async function submitAuth(e) {
+    if (e) e.preventDefault();
+    const setup = state.authMode === 'setup';
+    const username = $('#auth-username').value.trim();
+    const password = $('#auth-password').value;
+    if (!username) { showAuthError('请填写用户名'); return; }
+    if (setup && password.length < 6) { showAuthError('密码至少 6 位'); return; }
+    if (!password) { showAuthError('请填写密码'); return; }
+    if (setup && password !== $('#auth-confirm').value) { showAuthError('两次输入的密码不一致'); return; }
+
+    const btn = $('#auth-submit');
+    const label = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = setup ? '创建中…' : '登录中…';
+    try {
+      await api(setup ? '/api/auth/setup' : '/api/auth/login', {
+        method: 'POST',
+        body: { username, password, remember: setup ? true : $('#auth-remember').checked },
+      });
+      const info = await api('/api/auth/status');
+      state.auth = info;
+      renderUserChip(info);
+      hideAuth();
+      startApp();
+      toast(setup ? '账号已创建，已为你保持登录' : '登录成功');
+    } catch (err) {
+      showAuthError(err.message || '操作失败，请重试');
+      btn.disabled = false;
+      btn.textContent = label;
+    }
+  }
+
+  async function logout() {
+    try { await api('/api/auth/logout', { method: 'POST' }); } catch (e) { /* 已失效也无所谓 */ }
+    state.auth = null;
+    $('#user-chip').hidden = true;
+    $('#auth-username').value = '';
+    showAuth('login');
+    toast('已退出登录');
+  }
+
+  function openPasswordModal() {
+    openModal({
+      title: '修改密码',
+      width: 420,
+      body: `
+        <div class="form-row">
+          <label>当前密码</label>
+          <input class="input" id="pw-old" type="password" autocomplete="current-password">
+        </div>
+        <div class="form-row">
+          <label>新密码</label>
+          <input class="input" id="pw-new" type="password" autocomplete="new-password">
+          <div class="form-tip">至少 6 位。修改后其它设备的登录状态会失效，当前设备保持登录。</div>
+        </div>
+        <div class="form-row">
+          <label>确认新密码</label>
+          <input class="input" id="pw-confirm" type="password" autocomplete="new-password">
+        </div>`,
+      footer: `
+        <button class="btn ghost" onclick="__closeModal()">取消</button>
+        <button class="btn primary" id="pw-save">保存</button>`,
+    });
+    setTimeout(() => $('#pw-old').focus(), 60);
+    $('#pw-save').onclick = async () => {
+      const oldPwd = $('#pw-old').value;
+      const newPwd = $('#pw-new').value;
+      if (!oldPwd) { toast('请填写当前密码', 'err'); return; }
+      if (newPwd.length < 6) { toast('新密码至少 6 位', 'err'); return; }
+      if (newPwd !== $('#pw-confirm').value) { toast('两次输入的新密码不一致', 'err'); return; }
+      const btn = $('#pw-save');
+      btn.disabled = true; btn.textContent = '保存中…';
+      try {
+        await api('/api/auth/password', { method: 'POST', body: { old_password: oldPwd, new_password: newPwd } });
+        closeModal();
+        toast('密码已更新');
+      } catch (err) {
+        toast(err.message, 'err');
+        btn.disabled = false; btn.textContent = '保存';
+      }
+    };
+  }
+
+  // ------------------------------------------------------------ 启动
+  let bound = false;
+
+  function stopTimers() {
+    state.timers.forEach((id) => clearInterval(id));
+    state.timers = [];
+  }
+
+  function startApp() {
+    if (!bound) { bind(); bound = true; }
+    refresh();
+    if (state.timers.length) return;
+    state.timers.push(setInterval(() => {
       if (document.hidden) return;
       refresh(true);
       if (state.view === 'logs' && state.logAuto) loadLogs();
-    }, 4000);
-
-    setInterval(() => {
+    }, 4000));
+    state.timers.push(setInterval(() => {
       if (state.view === 'overview' && !document.hidden) loadFiles();
-    }, 10000);
+    }, 10000));
+  }
+
+  function boot() {
+    const saved = localStorage.getItem('dlr-theme');
+    applyTheme(saved || (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'));
+    $('#auth-form').addEventListener('submit', submitAuth);
+    $('#btn-logout').addEventListener('click', logout);
+    $('#btn-password').addEventListener('click', openPasswordModal);
+    window.__closeModal = closeModal;
+    checkAuth();
   }
 
   document.addEventListener('DOMContentLoaded', boot);

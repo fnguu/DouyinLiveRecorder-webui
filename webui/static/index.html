@@ -4,11 +4,50 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>直播录制 · 控制台</title>
-<link rel="stylesheet" href="/static/style.css?v=12">
+<link rel="stylesheet" href="/static/style.css?v=13">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%232563eb'/><circle cx='16' cy='16' r='7' fill='white'/><circle cx='16' cy='16' r='3' fill='%232563eb'/></svg>">
 </head>
 <body>
-<div class="app">
+<div class="auth-gate" id="auth-gate" hidden>
+  <div class="auth-card">
+    <div class="auth-brand">
+      <div class="brand-logo">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+          <circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3" fill="currentColor" stroke="none"/>
+        </svg>
+      </div>
+      <div>
+        <strong>直播录制</strong>
+        <span>WebUI 控制台</span>
+      </div>
+    </div>
+    <h2 id="auth-title">登录控制台</h2>
+    <p class="auth-sub" id="auth-sub">请输入用户名和密码</p>
+    <form id="auth-form" novalidate>
+      <label class="auth-field">
+        <span>用户名</span>
+        <input id="auth-username" name="username" autocomplete="username" maxlength="32" spellcheck="false" placeholder="例如 admin">
+      </label>
+      <label class="auth-field">
+        <span>密码</span>
+        <input id="auth-password" name="password" type="password" autocomplete="current-password" maxlength="128" placeholder="至少 6 位">
+      </label>
+      <label class="auth-field" id="auth-confirm-field" hidden>
+        <span>确认密码</span>
+        <input id="auth-confirm" type="password" autocomplete="new-password" maxlength="128" placeholder="再输入一次">
+      </label>
+      <label class="auth-remember" id="auth-remember-row">
+        <input type="checkbox" id="auth-remember" checked>
+        <span>保持登录状态（180 天内免登录）</span>
+      </label>
+      <div class="auth-err" id="auth-err" hidden></div>
+      <button class="btn primary auth-submit" id="auth-submit" type="submit">登录</button>
+    </form>
+    <p class="auth-foot" id="auth-foot">账号密码只保存在本机 config 目录，不会上传到任何服务器。</p>
+  </div>
+</div>
+
+<div class="app" id="app-root" hidden>
   <aside class="sidebar">
     <div class="brand">
       <div class="brand-logo">
@@ -58,7 +97,19 @@
         <h1 id="page-title">概览</h1>
         <p id="page-sub" class="page-sub">录制进程与主播整体状态</p>
       </div>
-      <div class="pills" id="top-pills"></div>
+      <div class="topbar-right">
+        <div class="pills" id="top-pills"></div>
+        <div class="user-chip" id="user-chip" hidden>
+          <span class="user-avatar" id="user-avatar">A</span>
+          <span class="user-name" id="user-name"></span>
+          <button class="icon-btn" id="btn-password" title="修改密码" aria-label="修改密码">
+            <svg viewBox="0 0 24 24"><path d="M12.6 10.2A6 6 0 1 0 11 14.7l1.6-1.6 1.4 1.4 1.4-1.4-1.4-1.4 1.3-1.3 1.4 1.4 1.4-1.4-1.4-1.4 1.1-1.1a3.6 3.6 0 1 0-3.3-3.2zM7 13a2 2 0 1 1 2-2 2 2 0 0 1-2 2z"/></svg>
+          </button>
+          <button class="icon-btn danger" id="btn-logout" title="退出登录" aria-label="退出登录">
+            <svg viewBox="0 0 24 24"><path d="M10 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h5v-2H5V5h5V3zm5.6 3.6L14.2 8l3 3H8v2h9.2l-3 3 1.4 1.4L21 12l-5.4-5.4z"/></svg>
+          </button>
+        </div>
+      </div>
     </header>
 
     <div class="scroll">
@@ -203,6 +254,6 @@
 </div>
 
 <div class="toast-stack" id="toast-stack"></div>
-<script src="/static/app.js?v=12"></script>
+<script src="/static/app.js?v=13"></script>
 </body>
 </html>
