@@ -27,17 +27,55 @@
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 
+  // 会话 Token 同时保存在 Cookie（HttpOnly）和本地存储里。
+  // 有些环境（被 NAS 桌面以 iframe 嵌入、浏览器禁用第三方 Cookie）下浏览器不会
+  // 带上 Cookie，这时用本地存储的 Token 走 X-DLR-Token 头，登录状态才不会每次重来。
+  const TOKEN_KEY = 'dlr-token';
+
+  function saveToken(token, remember = true) {
+    try {
+      if (!token) {
+        localStorage.removeItem(TOKEN_KEY);
+        sessionStorage.removeItem(TOKEN_KEY);
+        return;
+      }
+      if (remember) {
+        localStorage.setItem(TOKEN_KEY, token);
+        sessionStorage.removeItem(TOKEN_KEY);
+      } else {
+        sessionStorage.setItem(TOKEN_KEY, token);
+        localStorage.removeItem(TOKEN_KEY);
+      }
+    } catch (e) { /* 隐私模式下可能不可用，忽略 */ }
+  }
+
+  function authToken() {
+    try {
+      return localStorage.getItem(TOKEN_KEY) || sessionStorage.getItem(TOKEN_KEY) || '';
+    } catch (e) { return ''; }
+  }
+
+  function authHeaders(extra) {
+    const headers = Object.assign({ 'Content-Type': 'application/json' }, extra || {});
+    const token = authToken();
+    if (token) headers['X-DLR-Token'] = token;
+    return headers;
+  }
+
   async function api(path, opts = {}) {
     const res = await fetch(path, {
-      headers: { 'Content-Type': 'application/json' },
       ...opts,
+      headers: authHeaders(opts.headers),
       body: opts.body ? JSON.stringify(opts.body) : undefined,
     });
     if (res.status === 401) {
       let data = null;
       try { data = await res.json(); } catch (e) { data = null; }
       // 会话过期：直接回到登录页面，让用户重新输入密码
-      if (!path.startsWith('/api/auth/')) showAuth('login');
+      if (!path.startsWith('/api/auth/')) {
+        saveToken('');
+        showAuth('login');
+      }
       throw new Error((data && data.detail) || '需要登录');
     }
     let data = null;
@@ -625,6 +663,268 @@
   // ------------------------------------------------------------ 设置
   const GROUP_ICON = { record: '', network: '', push: '', account: '', cookie: '', advanced: '', other: '' };
 
+  // 「登录账号」不是 config.ini 里的配置项，而是 WebUI 自身的账号安全设置，
+  // 作为设置页里的虚拟分组挂在最后，改动即时生效（不走下方的保存设置）。
+  const ACCOUNT_GROUP = {
+    id: '__account',
+    title: '登录账号',
+    desc: 'WebUI 的用户名与密码。这里的改动点按钮后立即生效，不需要点下方「保存设置」。',
+  };
+
+  function settingsGroups() {
+    const s = state.settings;
+    const groups = s ? s.groups.filter((g) => s.fields.some((f) => f.group === g.id)) : [];
+    groups.push(ACCOUNT_GROUP);
+    return groups;
+  }
+
+  function accountGroupHtml() {
+    return `<div class="settings-group ${state.settingsGroup === '__account' ? 'active' : ''}" data-group="__account">
+      <div class="group-head"><h2>登录账号</h2><p>${esc(ACCOUNT_GROUP.desc)}</p></div>
+      <div class="acct-card">
+        <div class="acct-head">
+          <span class="acct-avatar" id="acct-avatar">A</span>
+          <div class="acct-id">
+            <strong id="acct-name">—</strong>
+            <em id="acct-meta">正在读取登录状态…</em>
+          </div>
+          <span class="acct-badge">已登录</span>
+        </div>
+        <div class="acct-form">
+          <div class="form-row">
+            <label>用户名</label>
+            <input class="input" id="acct-username" maxlength="32" spellcheck="false" autocomplete="username" placeholder="登录时使用的用户名">
+            <div class="form-tip">可以和密码一起改；只改用户名时只填当前密码即可。</div>
+          </div>
+          <div class="form-2col">
+            <div class="form-row">
+              <label>新密码<em class="acct-opt">留空则不修改</em></label>
+              <input class="input" id="acct-new" type="password" autocomplete="new-password" placeholder="至少 6 位">
+            </div>
+            <div class="form-row">
+              <label>确认新密码</label>
+              <input class="input" id="acct-confirm" type="password" autocomplete="new-password" placeholder="再输入一次">
+            </div>
+          </div>
+          <div class="form-row">
+            <label>当前密码<em class="acct-opt">必填，用于确认身份</em></label>
+            <input class="input" id="acct-current" type="password" autocomplete="current-password" placeholder="输入当前登录密码">
+          </div>
+          <div class="acct-actions">
+            <button class="btn primary" id="acct-save">保存账号修改</button>
+            <button class="btn ghost" id="acct-kick">退出其它设备</button>
+            <span class="acct-note" id="acct-note"></span>
+          </div>
+        </div>
+        <div class="acct-block">
+          <div class="acct-block-head">
+            <strong>登录设备</strong>
+            <span id="acct-dev-sum"></span>
+          </div>
+          <div class="dev-list" id="acct-devices"><div class="acct-empty">正在读取…</div></div>
+        </div>
+        <div class="acct-block">
+          <div class="acct-block-head">
+            <strong>操作时间日志</strong>
+            <span>最近 40 条，记录登录、改密与设备操作</span>
+          </div>
+          <div class="ev-list" id="acct-events"><div class="acct-empty">正在读取…</div></div>
+        </div>
+        <div class="acct-danger">
+          <div class="acct-danger-text">
+            <strong>重置登录凭据</strong>
+            <p>清空用户名和密码，页面回到「首次设置账号」，所有设备退出登录。主播列表、录制配置与录像文件都不受影响。</p>
+          </div>
+          <button class="btn danger" id="acct-reset">重置…</button>
+        </div>
+      </div>
+    </div>`;
+  }
+
+  const tsISO = (sec) => (sec ? new Date(sec * 1000).toISOString() : '');
+
+  function deviceLabel(ua) {
+    const s = ua || '';
+    const os = /Windows/.test(s) ? 'Windows'
+      : /Android/.test(s) ? 'Android'
+        : /iPhone|iPad|iPod/.test(s) ? 'iOS'
+          : /Mac OS X|Macintosh/.test(s) ? 'macOS'
+            : /Linux/.test(s) ? 'Linux' : '未知系统';
+    const br = /Edg\//.test(s) ? 'Edge'
+      : /OPR\/|Opera/.test(s) ? 'Opera'
+        : /Firefox\//.test(s) ? 'Firefox'
+          : /Chrome\//.test(s) ? 'Chrome'
+            : /Safari\//.test(s) ? 'Safari'
+              : /curl|python|okhttp/i.test(s) ? '脚本客户端' : '浏览器';
+    return `${br} · ${os}`;
+  }
+
+  function devicesHtml(list) {
+    if (!list || !list.length) return '<div class="acct-empty">暂无登录设备</div>';
+    return list.map((d) => `<div class="dev-row${d.current ? ' current' : ''}">
+      <div class="dev-main">
+        <strong>${esc(deviceLabel(d.ua))}${d.current ? '<span class="dev-now">本机</span>' : ''}</strong>
+        <em>${esc(d.ip || '未知 IP')} · 登录 ${esc(fmtDT(tsISO(d.created)))} · 最近活跃 ${esc(fmtDT(tsISO(d.last_seen)))}</em>
+      </div>
+      <span class="dev-exp">到期 ${esc(fmtDT(tsISO(d.expires)))}</span>
+    </div>`).join('');
+  }
+
+  const EVENT_KIND = {
+    setup: '创建账号', login: '登录', logout: '退出',
+    account: '账号修改', device: '设备管理', reset: '重置',
+  };
+
+  function eventsHtml(list) {
+    if (!list || !list.length) return '<div class="acct-empty">暂无操作记录</div>';
+    return list.map((e) => `<div class="ev-row">
+      <span class="ev-time">${esc(fmtDT(tsISO(e.t)))}</span>
+      <span class="ev-kind k-${esc(e.kind || 'other')}">${esc(EVENT_KIND[e.kind] || '操作')}</span>
+      <span class="ev-text">${esc(e.text || '')}</span>
+      <span class="ev-ip">${esc(e.ip || '')}</span>
+    </div>`).join('');
+  }
+
+  function fillAccount(info) {
+    if (!$('#acct-avatar')) return;
+    const name = (info && info.username) || '';
+    $('#acct-avatar').textContent = name ? initialOf(name) : 'A';
+    $('#acct-name').textContent = name || '—';
+    if (name) $('#acct-username').value = name;
+    const parts = [];
+    if (info && info.sessions) parts.push(`共 ${info.sessions} 处登录`);
+    if (info && info.other_sessions) parts.push(`其它设备 ${info.other_sessions} 处`);
+    if (info && info.expires_at) parts.push(`本设备有效期至 ${fmtDT(tsISO(info.expires_at))}`);
+    if (info && info.account_updated_at) parts.push(`账号上次修改 ${fmtDT(tsISO(info.account_updated_at))}`);
+    $('#acct-meta').textContent = parts.join(' · ') || '登录状态未知';
+    const note = $('#acct-note');
+    if (note) {
+      note.textContent = info && info.other_sessions
+        ? `还有 ${info.other_sessions} 处设备处于登录状态` : '当前只有这台设备登录';
+    }
+    const devices = (info && info.devices) || [];
+    $('#acct-devices').innerHTML = devicesHtml(devices);
+    $('#acct-dev-sum').textContent = devices.length
+      ? `${devices.length} 台设备${info.other_sessions ? `，其中 ${info.other_sessions} 台可远程退出` : '（全部为本机）'}`
+      : '';
+    $('#acct-events').innerHTML = eventsHtml((info && info.events) || []);
+  }
+
+  async function loadAccount() {
+    try {
+      const info = await api('/api/auth/status');
+      state.auth = info;
+      fillAccount(info);
+      renderUserChip(info);
+    } catch (e) { /* 会话失效时 api() 会切回登录页 */ }
+  }
+
+  async function submitAccount() {
+    const username = $('#acct-username').value.trim();
+    const newPwd = $('#acct-new').value;
+    const current = $('#acct-current').value;
+    if (!username) { toast('用户名不能为空', 'err'); return; }
+    if (newPwd && newPwd.length < 6) { toast('新密码至少 6 位', 'err'); return; }
+    if (newPwd !== $('#acct-confirm').value) { toast('两次输入的新密码不一致', 'err'); return; }
+    if (!current) { toast('请填写当前密码', 'err'); $('#acct-current').focus(); return; }
+    const btn = $('#acct-save');
+    btn.disabled = true; btn.textContent = '保存中…';
+    try {
+      const r = await api('/api/auth/account', {
+        method: 'POST',
+        body: { username, new_password: newPwd, current_password: current },
+      });
+      const pwdChanged = !!r.password_changed;
+      $('#acct-new').value = '';
+      $('#acct-confirm').value = '';
+      $('#acct-current').value = '';
+      await loadAccount();
+      toast(pwdChanged ? '用户名与密码已更新，其它设备需重新登录' : '用户名已更新');
+    } catch (e) {
+      toast(e.message, 'err');
+    } finally {
+      btn.disabled = false; btn.textContent = '保存账号修改';
+    }
+  }
+
+  async function kickOtherSessions() {
+    try {
+      const r = await api('/api/auth/logout-others', { method: 'POST' });
+      await loadAccount();
+      toast(r.removed ? `已退出其它 ${r.removed} 处登录` : '没有其它设备处于登录状态');
+    } catch (e) { toast(e.message, 'err'); }
+  }
+
+  function openResetAccountModal() {
+    openModal({
+      title: '重置登录凭据',
+      width: 460,
+      body: `
+        <div class="reset-warn">
+          <strong>重置后需要重新设置用户名和密码</strong>
+          <p>当前账号、密码与所有设备的登录状态都会被清空，页面立即回到「首次设置账号」。</p>
+        </div>
+        <div class="form-row">
+          <label>当前密码</label>
+          <input class="input" id="rs-pwd" type="password" autocomplete="current-password">
+        </div>
+        <div class="form-row">
+          <label>输入「重置」确认</label>
+          <input class="input" id="rs-confirm" placeholder="重置" autocomplete="off" spellcheck="false">
+        </div>`,
+      footer: `
+        <button class="btn ghost" onclick="__closeModal()">取消</button>
+        <button class="btn danger" id="rs-submit">重置登录凭据</button>`,
+    });
+    setTimeout(() => $('#rs-pwd').focus(), 60);
+    $('#rs-submit').onclick = async () => {
+      const pwd = $('#rs-pwd').value;
+      if (!pwd) { toast('请填写当前密码', 'err'); return; }
+      if ($('#rs-confirm').value.trim() !== '重置') { toast('请输入「重置」确认操作', 'err'); return; }
+      const btn = $('#rs-submit');
+      btn.disabled = true; btn.textContent = '重置中…';
+      try {
+        await api('/api/auth/reset', { method: 'POST', body: { current_password: pwd, confirm: '重置' } });
+        closeModal();
+        saveToken('');
+        state.auth = null;
+        $('#user-chip').hidden = true;
+        $('#auth-username').value = '';
+        showAuth('setup');
+        toast('已重置，请重新设置用户名和密码');
+      } catch (e) {
+        toast(e.message, 'err');
+        btn.disabled = false; btn.textContent = '重置登录凭据';
+      }
+    };
+  }
+
+  function bindAccountGroup() {
+    const save = $('#acct-save');
+    if (!save) return;
+    fillAccount(state.auth);
+    loadAccount();
+    save.addEventListener('click', submitAccount);
+    $('#acct-kick').addEventListener('click', kickOtherSessions);
+    $('#acct-reset').addEventListener('click', openResetAccountModal);
+    ['acct-new', 'acct-confirm', 'acct-current'].forEach((id) => {
+      const el = document.getElementById(id);
+      if (!el) return;
+      el.addEventListener('keydown', (e) => { if (e.key === 'Enter') submitAccount(); });
+    });
+  }
+
+  function openAccountSettings() {
+    state.settingsGroup = '__account';
+    switchView('settings');
+    setTimeout(() => {
+      const el = $('.settings-group[data-group="__account"]');
+      if (el && el.classList.contains('active') && el.scrollIntoView) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }
+    }, 180);
+  }
+
   function fieldControl(f) {
     const id = `f-${encodeURIComponent(f.section)}-${encodeURIComponent(f.key)}`.replace(/%/g, '_');
     const v = f.value == null ? '' : String(f.value);
@@ -655,40 +955,46 @@
     return { id, control, wide };
   }
 
+  function fieldsGroupHtml(g) {
+    const s = state.settings;
+    const fields = s.fields.filter((f) => f.group === g.id);
+    return `<div class="settings-group ${g.id === state.settingsGroup ? 'active' : ''}" data-group="${g.id}">
+      <div class="group-head"><h2>${esc(g.title)}</h2><p>${esc(g.desc)}</p></div>
+      ${fields.map((f) => {
+        const { id, control, wide } = fieldControl(f);
+        return `<div class="field ${wide ? 'wide' : ''}" data-fid="${esc(id)}" data-section="${esc(f.section)}" data-key="${esc(f.key)}" data-type="${esc(f.type)}">
+          <div class="field-label">
+            <strong>${esc(f.label)}</strong>
+            ${f.help ? `<p>${esc(f.help)}</p>` : ''}
+            <span class="field-key">${esc(f.section)} · ${esc(f.key)}</span>
+          </div>
+          <div class="field-control">${control}</div>
+        </div>`;
+      }).join('')}
+    </div>`;
+  }
+
   function renderSettings() {
     const s = state.settings;
-    if (!s) return;
-    const groups = s.groups.filter((g) => s.fields.some((f) => f.group === g.id));
+    const groups = settingsGroups();
+    if (!groups.length) return;
     if (!state.settingsGroup || !groups.some((g) => g.id === state.settingsGroup)) {
-      state.settingsGroup = groups[0] ? groups[0].id : '';
+      state.settingsGroup = groups[0].id;
     }
 
     $('#settings-nav').innerHTML = groups.map((g) => {
-      const n = s.fields.filter((f) => f.group === g.id).length;
+      const n = s && g.id !== '__account' ? s.fields.filter((f) => f.group === g.id).length : 0;
       return `<button data-group="${g.id}" class="${g.id === state.settingsGroup ? 'active' : ''}">
-        ${esc(g.title)}<small>${n}</small></button>`;
+        ${esc(g.title)}<small>${g.id === '__account' ? '安全' : n}</small></button>`;
     }).join('');
 
-    $('#settings-groups').innerHTML = groups.map((g) => {
-      const fields = s.fields.filter((f) => f.group === g.id);
-      return `<div class="settings-group ${g.id === state.settingsGroup ? 'active' : ''}" data-group="${g.id}">
-        <div class="group-head"><h2>${esc(g.title)}</h2><p>${esc(g.desc)}</p></div>
-        ${fields.map((f) => {
-          const { id, control, wide } = fieldControl(f);
-          return `<div class="field ${wide ? 'wide' : ''}" data-fid="${esc(id)}" data-section="${esc(f.section)}" data-key="${esc(f.key)}" data-type="${esc(f.type)}">
-            <div class="field-label">
-              <strong>${esc(f.label)}</strong>
-              ${f.help ? `<p>${esc(f.help)}</p>` : ''}
-              <span class="field-key">${esc(f.section)} · ${esc(f.key)}</span>
-            </div>
-            <div class="field-control">${control}</div>
-          </div>`;
-        }).join('')}
-      </div>`;
-    }).join('');
+    $('#settings-groups').innerHTML = groups.map((g) => (
+      g.id === '__account' ? accountGroupHtml() : fieldsGroupHtml(g)
+    )).join('');
 
     state.dirty.clear();
     updateSaveBar();
+    if (groups.some((g) => g.id === '__account')) bindAccountGroup();
   }
 
   function fieldValueFromControl(el) {
@@ -973,9 +1279,8 @@
     state.authMode = mode === 'setup' ? 'setup' : 'login';
     const setup = state.authMode === 'setup';
     $('#auth-title').textContent = setup ? '设置登录账号' : '登录控制台';
-    $('#auth-sub').textContent = setup
-      ? '首次使用，请设置一个用户名和密码（密码至少 6 位）'
-      : '请输入用户名和密码继续';
+    $('#auth-sub').textContent = setup ? '首次使用，请设置一个用户名和密码（至少 6 位）' : '';
+    $('#auth-sub').hidden = !setup;
     $('#auth-confirm-field').hidden = !setup;
     $('#auth-remember-row').hidden = setup;
     $('#auth-submit').textContent = setup ? '创建并进入' : '登录';
@@ -1013,7 +1318,7 @@
   async function checkAuth() {
     let info = null;
     try {
-      const res = await fetch('/api/auth/status', { headers: { 'Content-Type': 'application/json' } });
+      const res = await fetch('/api/auth/status', { headers: authHeaders() });
       info = await res.json();
     } catch (e) { info = null; }
     if (!info) {
@@ -1023,7 +1328,11 @@
     }
     state.auth = info;
     if (!info.configured) { showAuth('setup'); return; }
-    if (!info.logged_in) { showAuth('login'); return; }
+    if (!info.logged_in) {
+      if (authToken()) saveToken('');  // 本地 Token 已失效，清掉免得反复带坏请求
+      showAuth('login');
+      return;
+    }
     renderUserChip(info);
     hideAuth();
     startApp();
@@ -1044,10 +1353,12 @@
     btn.disabled = true;
     btn.textContent = setup ? '创建中…' : '登录中…';
     try {
-      await api(setup ? '/api/auth/setup' : '/api/auth/login', {
+      const remember = setup ? true : $('#auth-remember').checked;
+      const r = await api(setup ? '/api/auth/setup' : '/api/auth/login', {
         method: 'POST',
-        body: { username, password, remember: setup ? true : $('#auth-remember').checked },
+        body: { username, password, remember },
       });
+      saveToken(r && r.token, remember);
       const info = await api('/api/auth/status');
       state.auth = info;
       renderUserChip(info);
@@ -1063,53 +1374,12 @@
 
   async function logout() {
     try { await api('/api/auth/logout', { method: 'POST' }); } catch (e) { /* 已失效也无所谓 */ }
+    saveToken('');
     state.auth = null;
     $('#user-chip').hidden = true;
     $('#auth-username').value = '';
     showAuth('login');
     toast('已退出登录');
-  }
-
-  function openPasswordModal() {
-    openModal({
-      title: '修改密码',
-      width: 420,
-      body: `
-        <div class="form-row">
-          <label>当前密码</label>
-          <input class="input" id="pw-old" type="password" autocomplete="current-password">
-        </div>
-        <div class="form-row">
-          <label>新密码</label>
-          <input class="input" id="pw-new" type="password" autocomplete="new-password">
-          <div class="form-tip">至少 6 位。修改后其它设备的登录状态会失效，当前设备保持登录。</div>
-        </div>
-        <div class="form-row">
-          <label>确认新密码</label>
-          <input class="input" id="pw-confirm" type="password" autocomplete="new-password">
-        </div>`,
-      footer: `
-        <button class="btn ghost" onclick="__closeModal()">取消</button>
-        <button class="btn primary" id="pw-save">保存</button>`,
-    });
-    setTimeout(() => $('#pw-old').focus(), 60);
-    $('#pw-save').onclick = async () => {
-      const oldPwd = $('#pw-old').value;
-      const newPwd = $('#pw-new').value;
-      if (!oldPwd) { toast('请填写当前密码', 'err'); return; }
-      if (newPwd.length < 6) { toast('新密码至少 6 位', 'err'); return; }
-      if (newPwd !== $('#pw-confirm').value) { toast('两次输入的新密码不一致', 'err'); return; }
-      const btn = $('#pw-save');
-      btn.disabled = true; btn.textContent = '保存中…';
-      try {
-        await api('/api/auth/password', { method: 'POST', body: { old_password: oldPwd, new_password: newPwd } });
-        closeModal();
-        toast('密码已更新');
-      } catch (err) {
-        toast(err.message, 'err');
-        btn.disabled = false; btn.textContent = '保存';
-      }
-    };
   }
 
   // ------------------------------------------------------------ 启动
@@ -1139,7 +1409,7 @@
     applyTheme(saved || (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'));
     $('#auth-form').addEventListener('submit', submitAuth);
     $('#btn-logout').addEventListener('click', logout);
-    $('#btn-password').addEventListener('click', openPasswordModal);
+    $('#btn-password').addEventListener('click', openAccountSettings);
     window.__closeModal = closeModal;
     checkAuth();
   }

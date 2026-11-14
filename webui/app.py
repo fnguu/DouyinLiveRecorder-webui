@@ -74,6 +74,18 @@ def _basic_ok(request: Request) -> bool:
 
 
 def _cookie_token(request: Request) -> str:
+    """会话 Token：优先请求头，其次 Cookie。
+
+    某些场景（例如被 NAS 桌面以 iframe 嵌入、浏览器禁用第三方 Cookie）下 Cookie
+    会整体失效，前端会同时把 Token 放在 ``X-DLR-Token`` 头里；显式请求头优先，
+    避免浏览器里残留的旧 Cookie 盖掉前端刚拿到的 Token。
+    """
+    token = request.headers.get('x-dlr-token', '') or ''
+    if token:
+        return token
+    header = request.headers.get('authorization', '')
+    if header.lower().startswith('bearer '):
+        return header[7:].strip()
     return request.cookies.get(auth.COOKIE_NAME, '') or ''
 
 
@@ -94,12 +106,17 @@ def _with_session(payload: dict, token: str, remember: bool = True) -> JSONRespo
 
     remember=True：持久 Cookie，180 天内免登录（使用中自动续期）；
     remember=False：浏览器会话 Cookie，关掉浏览器即失效。
+
+    响应体里同时带上 token，前端会存进 localStorage 作为 Cookie 失效时的兜底
+    （例如页面被 iframe 嵌入导致浏览器不发送 Cookie）。
     """
+    payload = dict(payload, token=token, remember=bool(remember))
     resp = JSONResponse(payload)
     kwargs = {'httponly': True, 'samesite': 'lax', 'path': '/', 'secure': auth.COOKIE_SECURE}
     if remember:
         kwargs['max_age'] = auth.SESSION_DAYS * 86400
     resp.set_cookie(auth.COOKIE_NAME, token, **kwargs)
+    resp.headers['X-DLR-Token'] = token
     return resp
 
 
@@ -113,6 +130,16 @@ def auth_status(request: Request):
         'expires_at': auth.expires_at(token) if logged_in else 0,
         'password_env': bool(WEBUI_PASSWORD),
     })
+    if logged_in:
+        account = auth.account_info(token)
+        info.update({
+            'sessions': account['sessions'],
+            'other_sessions': account['other_sessions'],
+            'account_updated_at': account['updated_at'],
+            'account_created_at': account['created_at'],
+            'devices': account['devices'],
+            'events': account['events'],
+        })
     return info
 
 
@@ -123,9 +150,11 @@ def auth_setup(request: Request, payload: Dict[str, Any] = Body(...)):
         raise HTTPException(status_code=409, detail='已设置过用户名密码，请直接登录')
     user = str(payload.get('username') or '')
     pwd = str(payload.get('password') or '')
+    ip = _client_key(request)
+    ua = request.headers.get('user-agent', '')
     try:
-        auth.setup(user, pwd)
-        token = auth.login(user, pwd, request.headers.get('user-agent', ''))
+        auth.setup(user, pwd, ip=ip)
+        token = auth.login(user, pwd, ua, ip=ip)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except OSError as exc:
@@ -144,7 +173,8 @@ def auth_login(request: Request, payload: Dict[str, Any] = Body(...)):
     try:
         token = auth.login(str(payload.get('username') or ''), str(payload.get('password') or ''),
                            request.headers.get('user-agent', ''),
-                           days=auth.SESSION_DAYS if payload.get('remember', True) else 1)
+                           days=auth.SESSION_DAYS if payload.get('remember', True) else 1,
+                           ip=key)
     except ValueError as exc:
         auth.note_failure(key)
         raise HTTPException(status_code=401, detail=str(exc))
@@ -155,24 +185,82 @@ def auth_login(request: Request, payload: Dict[str, Any] = Body(...)):
 
 @app.post('/api/auth/logout')
 def auth_logout(request: Request):
-    auth.revoke(_cookie_token(request))
+    auth.logout(_cookie_token(request), ip=_client_key(request))
     resp = JSONResponse({'ok': True})
     resp.delete_cookie(auth.COOKIE_NAME, path='/')
     return resp
 
 
-@app.post('/api/auth/password')
-def auth_password(request: Request, payload: Dict[str, Any] = Body(...)):
-    """修改密码：成功后其它设备的会话全部失效，当前会话保留。"""
+def _require_session(request: Request) -> str:
+    """这些接口本身放行（公开前缀），所以自己校验一次会话。"""
     token = _cookie_token(request)
     if not auth.verify_session(token):
         raise HTTPException(status_code=401, detail='需要登录')
+    return token
+
+
+@app.post('/api/auth/password')
+def auth_password(request: Request, payload: Dict[str, Any] = Body(...)):
+    """修改密码：成功后其它设备的会话全部失效，当前会话保留。"""
+    token = _require_session(request)
     try:
         auth.change_password(str(payload.get('old_password') or ''),
-                             str(payload.get('new_password') or ''), keep_token=token)
+                             str(payload.get('new_password') or ''), keep_token=token,
+                             ip=_client_key(request))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     return {'ok': True, 'username': auth.username()}
+
+
+@app.post('/api/auth/account')
+def auth_account(request: Request, payload: Dict[str, Any] = Body(...)):
+    """修改用户名 / 密码（全局设置 → 登录账号）。当前密码用于确认身份。"""
+    token = _require_session(request)
+    key = _client_key(request)
+    wait = auth.locked_for(key)
+    if wait:
+        raise HTTPException(status_code=429, detail=f'密码错误次数过多，请 {wait} 秒后再试')
+    username = payload.get('username')
+    try:
+        result = auth.change_account(
+            str(payload.get('current_password') or ''),
+            username=str(username) if username is not None else None,
+            new_password=str(payload.get('new_password') or ''),
+            keep_token=token,
+            ip=key,
+        )
+    except ValueError as exc:
+        auth.note_failure(key)
+        raise HTTPException(status_code=400, detail=str(exc))
+    auth.clear_failures(key)
+    account = auth.account_info(token)
+    account.update({'ok': True, **result})
+    return account
+
+
+@app.post('/api/auth/logout-others')
+def auth_logout_others(request: Request):
+    """只保留当前设备，其它设备全部下线。"""
+    token = _require_session(request)
+    removed = auth.revoke_others(token, ip=_client_key(request))
+    account = auth.account_info(token)
+    account.update({'ok': True, 'removed': removed})
+    return account
+
+
+@app.post('/api/auth/reset')
+def auth_reset(request: Request, payload: Dict[str, Any] = Body(...)):
+    """清空用户名密码，回到首次设置流程。需要当前密码 + 手动输入确认词。"""
+    token = _require_session(request)
+    if str(payload.get('confirm') or '').strip() not in ('重置', 'reset', 'RESET', 'Reset'):
+        raise HTTPException(status_code=400, detail='请输入「重置」确认操作')
+    if not auth.verify_password(str(payload.get('current_password') or '')):
+        raise HTTPException(status_code=400, detail='当前密码不正确')
+    auth.reset_credentials(ip=_client_key(request))
+    resp = JSONResponse({'ok': True, 'reset': True})
+    resp.delete_cookie(auth.COOKIE_NAME, path='/')
+    return resp
+
 
 
 def _state_of(anchor: dict, tm: dict | None = None) -> dict:
