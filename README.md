@@ -1,10 +1,16 @@
 ![video_spider](https://socialify.git.ci/ihmily/DouyinLiveRecorder/image?font=Inter&forks=1&language=1&owner=1&pattern=Circuit%20Board&stargazers=1&theme=Light)
 
-> ## 🖥️ 本仓库是带 WebUI 控制台的容器版
+> ## 🖥️ 本仓库是带 WebUI 控制台 + 弹幕录制的容器版（当前版本 v4.1.0）
 >
-> 在原版基础上增加了浏览器管理界面：**不改配置文件格式**，网页里就能增删主播、
-> 单独控制每个主播是否录制 / 是否推送 / 是否录弹幕、以及编辑全部设置项（录制、推送、Cookie、账号）。
-> 抖音、B站直播可在录像的同时抓取弹幕，输出 B 站弹幕格式 XML 与 ASS 字幕，可直接挂载或烧进画面。
+> 在上游 [v4.0.7](https://github.com/ihmily/DouyinLiveRecorder/releases/tag/v4.0.7) 基础上增加两块能力：
+>
+> **① WebUI 控制台** —— 不改配置文件格式，浏览器里就能增删主播、单独控制每个主播是否录制 /
+> 是否推送 / 是否录弹幕，以及编辑全部设置项（录制、推送、Cookie、账号），可查看实时状态与录像回放。
+>
+> **② 弹幕录制** —— 抖音、B 站直播可在录像的同时抓取弹幕，输出 **B 站弹幕格式 XML**
+> （内嵌样式，浏览器双击即可预览）与 **ASS 字幕**，可直接挂载进播放器或烧进画面；
+> B 站额外支持礼物、醒目留言、上舰（舰长/提督/总督）记录。
+>
 > 本仓库只提供容器运行方式，需要直接跑源码请参考[上游仓库](https://github.com/ihmily/DouyinLiveRecorder)。
 >
 > ```bash
@@ -13,7 +19,7 @@
 > ```
 >
 > 详细说明见 **[WEBUI.md](WEBUI.md)**，容器参数详解见下方「容器运行」章节。
-> 当前 WebUI 版本 **1.0.0.13**（版本号末位为修订次数，见「系统状态」页的更新记录）。
+> 当前 WebUI 版本 **1.0.0.19**（版本号末位为修订次数，见「系统状态」页的更新记录）。
 >
 > ---
 >
@@ -26,14 +32,21 @@
 > 本仓库未改动其平台接口与流解析实现。
 
 ## 💡简介
+[![Version](https://img.shields.io/badge/version-v4.1.0-blue.svg)](https://github.com/fnguu/DouyinLiveRecorder-webui/releases/latest)
+[![Base](https://img.shields.io/badge/base-v4.0.7-lightgrey.svg)](https://github.com/ihmily/DouyinLiveRecorder/releases/tag/v4.0.7)
+[![Danmaku](https://img.shields.io/badge/danmaku-%E6%8A%96%E9%9F%B3%20%7C%20B%E7%AB%99-ff69b4.svg)](#-弹幕录制)
 [![Python Version](https://img.shields.io/badge/python-3.11.6-blue.svg)](https://www.python.org/downloads/release/python-3116/)
-[![Supported Platforms](https://img.shields.io/badge/platforms-Windows%20%7C%20Linux-blue.svg)](https://github.com/ihmily/DouyinLiveRecorder)
-[![Docker Pulls](https://img.shields.io/docker/pulls/ihmily/douyin-live-recorder?label=Docker%20Pulls&color=blue&logo=docker)](https://hub.docker.com/r/ihmily/douyin-live-recorder/tags)
-![GitHub issues](https://img.shields.io/github/issues/ihmily/DouyinLiveRecorder.svg)
-[![Latest Release](https://img.shields.io/github/v/release/ihmily/DouyinLiveRecorder)](https://github.com/ihmily/DouyinLiveRecorder/releases/latest)
-[![Downloads](https://img.shields.io/github/downloads/ihmily/DouyinLiveRecorder/total)](https://github.com/ihmily/DouyinLiveRecorder/releases/latest)
+[![GitHub issues](https://img.shields.io/github/issues/fnguu/DouyinLiveRecorder-webui.svg)](https://github.com/fnguu/DouyinLiveRecorder-webui/issues)
+[![Downloads](https://img.shields.io/github/downloads/fnguu/DouyinLiveRecorder-webui/total)](https://github.com/fnguu/DouyinLiveRecorder-webui/releases/latest)
 
-一款**简易**的可循环值守的直播录制工具，基于FFmpeg实现多平台直播源录制，支持自定义配置录制以及直播状态推送。
+一款**简易**的可循环值守的直播录制工具，基于 FFmpeg 实现多平台直播源录制，支持自定义配置录制以及直播状态推送。
+
+本仓库在此基础上做了两项增强：
+
+- 🖥️ **WebUI 控制台**：浏览器管理主播列表与全部设置项，单主播级别的录制/推送/弹幕开关，实时运行状态、系统信息与录像在线播放，手机端自适应。无需登录，直接 `docker compose up -d` 后访问 `http://localhost:8000`。
+- 🎬 **弹幕录制**：抖音、B 站直播在录像的同时抓取弹幕，与视频同名输出 `.danmaku.xml` 与 `.ass` 字幕；XML 兼容 B 站标准弹幕格式（DanmakuFactory / 播放器可直接用），并内嵌样式表，双击文件就能在浏览器里查看完整弹幕列表。B 站支持礼物、醒目留言（SC）、上舰记录，ASS 字幕形如 `用户名:弹幕内容`。
+
+> 弹幕录制为可选功能，默认关闭，可在 WebUI「设置」页全局开启，或用主播列表里的单主播开关精细控制。
 
 </div>
 
@@ -94,6 +107,34 @@
 
 </div>
 
+## 🎬 弹幕录制
+
+录制视频的同时把弹幕一并存下来，与视频同目录、同文件名：
+
+```
+downloads/抖音直播/某主播/某主播_2026-11-14_20-30-00.mp4
+downloads/抖音直播/某主播/某主播_2026-11-14_20-30-00.danmaku.xml
+downloads/抖音直播/某主播/某主播_2026-11-14_20-30-00.danmaku.ass
+```
+
+| 项目 | 说明 |
+|---|---|
+| 支持平台 | 抖音、B 站（其余平台暂不支持） |
+| XML | B 站标准弹幕格式（`<d p="...">`），兼容 DanmakuFactory、PotPlayer 等工具；内嵌 XSLT 样式，**浏览器双击即可预览**用户名/时间/用户ID/内容表格 |
+| ASS | 可直接挂载进播放器或烧进画面，文本格式为 `用户名:弹幕内容`，礼物/醒目留言/上舰带【礼物】【醒目留言】【上舰】前缀 |
+| 内容类型 | 弹幕、表情；B 站另含礼物、醒目留言（SC）、上舰（舰长/提督/总督）；抖音无 SC/上舰 |
+| 写入方式 | 边录边追加，进程异常退出也只丢收尾标签，已写入的弹幕不会丢 |
+| 开关 | 全局开关在「设置」页，单主播开关在主播列表；可在录像弹窗里直接下载 |
+
+使用提示：
+
+- **B 站建议填 Cookie**（设置页 → B 站 Cookie，至少含 `SESSDATA`）。不登录时 B 站只给超清画质（原画需登录态），送礼人昵称也会被打码成 `浪***`。
+- 抖音建议同样填 Cookie，能显著降低接口风控导致的「已开播但监控不到」以及礼物消息缺失。
+- 礼物金额字段为金瓜子数量（B 站 1000 金瓜子 = 1 元），XML 里以 `price` 属性保存。
+- 弹幕转换示例：`DanmakuFactory -i xxx.danmaku.xml -o xxx.ass`。
+
+&emsp;
+
 ## 🎈项目结构
 
 ```
@@ -131,7 +172,8 @@
 
 ## 🌱使用说明
 
-- 对于只想使用录制软件的小白用户，进入[Releases](https://github.com/ihmily/DouyinLiveRecorder/releases) 中下载最新发布的 zip压缩包即可，里面有打包好的录制软件。（有些电脑可能会报毒，直接忽略即可，如果下载时被浏览器屏蔽，请更换浏览器下载）
+- **本仓库推荐用容器运行**：`docker compose up -d` 后访问 `http://localhost:8000` 即可，详细步骤见下方「容器运行」与 [WEBUI.md](WEBUI.md)。[Releases](https://github.com/fnguu/DouyinLiveRecorder-webui/releases) 里提供源码包与镜像标签，不含 Windows 打包版。
+- 需要 Windows 直接运行的打包版，请到[上游 Releases](https://github.com/ihmily/DouyinLiveRecorder/releases) 下载 zip 压缩包（无 WebUI、无弹幕录制）。（有些电脑可能会报毒，直接忽略即可，如果下载时被浏览器屏蔽，请更换浏览器下载）
 
 - 压缩包解压后，在 `config` 文件夹内的 `URL_config.ini` 中添加录制直播间地址，一行一个直播间地址。如果要自定义配置录制，可以修改`config.ini` 文件，推荐将录制格式修改为`ts`。
 - 以上步骤都做好后，就可以运行`DouyinLiveRecorder.exe` 程序进行录制了。录制的视频文件保存在同目录下的 `downloads` 文件夹内。

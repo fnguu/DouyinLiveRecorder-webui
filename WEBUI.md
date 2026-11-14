@@ -6,7 +6,7 @@
 > **产出说明**：本项目的 WebUI 前后端、容器化配置与文档**均由 AI（WorkBuddy）生成**，
 > 人工只负责需求描述与验收。录制核心沿用上游实现，未改动其平台接口与流解析逻辑。
 
-![架构](https://img.shields.io/badge/base-v4.0.7-blue) ![python](https://img.shields.io/badge/python-3.11-blue) ![ui](https://img.shields.io/badge/WebUI-FastAPI%2B%E5%8E%9F%E7%94%9FJS-green)
+![版本](https://img.shields.io/badge/version-v4.1.0-blue) ![架构](https://img.shields.io/badge/base-v4.0.7-blue) ![python](https://img.shields.io/badge/python-3.11-blue) ![ui](https://img.shields.io/badge/WebUI-FastAPI%2B%E5%8E%9F%E7%94%9FJS-green)
 
 ---
 
@@ -21,7 +21,7 @@
 | 实时状态 | 概览页显示录制进程心跳、监测数、正在录制数、磁盘剩余、最近录像文件 |
 | 主播列表 | 表格展示：主播 / 直播平台 / 状态 / 最后直播时间 / 操作 |
 | 录像回放 | 点主播名查看该主播的全部录像并在线播放，ts/mkv/flv 自动无损转封装，支持拖动进度条与下载 |
-| 弹幕录制 | 抖音、B站直播可同时抓取弹幕，输出 B 站弹幕格式 XML + ASS 字幕，与录像同目录同名前缀 |
+| 弹幕录制 | 抖音、B站直播可同时抓取弹幕，输出 B 站弹幕格式 XML + ASS 字幕，与录像同目录同名前缀；B 站含礼物、醒目留言、上舰记录，XML 内嵌样式浏览器可直接预览 |
 | 运行日志 | 网页直接看容器内运行输出 / 直播状态 / 调试日志，可自动刷新 |
 | 零停机 | 改设置、加主播都不需要重启容器 |
 
