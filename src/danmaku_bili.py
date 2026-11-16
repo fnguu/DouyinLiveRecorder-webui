@@ -760,6 +760,19 @@ def start_danmaku(room_id: str, save_file_path: str, anchor_name: str = '',
     with _sessions_lock:
         if key in _sessions:
             return False
+
+    # 网址里的房号可能是短号（例如 live.bilibili.com/213 的真实 room_id 是 47867）。
+    # 短号拿去订阅弹幕会「连得上但一条都收不到」，所以统一先换成真实 room_id。
+    # 换不到就沿用原值，行为和以前一致。
+    real_id, _title = resolve_room_id(str(room_id))
+    if real_id and str(real_id) != str(room_id):
+        logger.info(f'B站房间号 {room_id} 是短号，改用真实 room_id {real_id}')
+    if real_id:
+        room_id = real_id
+
+    with _sessions_lock:
+        if key in _sessions:
+            return False
         rec = BiliDanmakuRecorder(room_id, save_file_path, anchor_name, cookie, formats,
                                   sync_start, **kwargs)
         ok = rec.start()
