@@ -17,6 +17,7 @@ from fastapi.staticfiles import StaticFiles
 
 from . import anchors as anchors_mod
 from . import auth
+from . import cookie_health
 from . import version as webui_version
 from . import media
 from .config_io import read_ini
@@ -586,6 +587,21 @@ def system_info():
     }
 
 
+@app.get('/api/cookie/status')
+def cookie_status():
+    """Cookie 状态卡片用：只读上次结论与当前配置，不联网。"""
+    return cookie_health.snapshot()
+
+
+@app.post('/api/cookie/check')
+def cookie_check():
+    """立即检测一次（会按需推送提醒）。"""
+    try:
+        return cookie_health.run_check(notify=True)
+    except Exception as exc:  # 单次检测异常不该把接口打挂
+        raise HTTPException(status_code=500, detail=f'Cookie 检测失败：{exc}')
+
+
 @app.get('/api/logs')
 def get_logs(name: str = Query('console'), lines: int = Query(300)):
     return tail_log(name, lines)
@@ -616,6 +632,13 @@ def test_anchor(payload: Optional[Dict[str, Any]] = Body(None)):
     platform = detect_platform(url)
     return {'platform': platform, 'supported': platform != '其他'}
 
+
+# Cookie 失效检查跑在 WebUI 进程里：只要容器活着就会按「Cookie 检查间隔」自己跑，
+# 不依赖是否有人打开页面。
+try:
+    cookie_health.start_background()
+except Exception as _exc:  # pragma: no cover
+    print(f'[webui] Cookie 定时检查未启动: {_exc}', flush=True)
 
 app.mount('/static', StaticFiles(directory=STATIC_DIR), name='static')
 

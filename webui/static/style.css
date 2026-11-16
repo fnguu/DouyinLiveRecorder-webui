@@ -103,6 +103,8 @@ a { color: var(--accent); text-decoration: none; }
   padding: 1px 6px; border-radius: 20px;
 }
 .nav-item.active .nav-badge { background: var(--panel); color: var(--accent-text); }
+.nav-badge.danger { background: var(--red); color: #fff; }
+.nav-badge.danger[hidden] { display: none; }
 
 .sidebar-foot { margin-top: auto; display: flex; align-items: center; gap: 8px; padding: 10px 4px 0; border-top: 1px solid var(--border); }
 .theme-toggle {
@@ -153,7 +155,7 @@ html[data-theme="dark"] .theme-toggle .icon-moon { display: none; }
   min-width: 0;
 }
 .card-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-bottom: 12px; min-width: 0; }
-.card-head h2 { font-size: 14px; }
+.card-head h2 { font-size: 14px; flex: 0 0 auto; white-space: nowrap; }
 .hint { font-size: 11.5px; color: var(--muted); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .stat-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; margin-bottom: 18px; }
@@ -434,6 +436,29 @@ html[data-theme="dark"] .theme-toggle .icon-moon { display: none; }
 .sys-item .v em { font-style: normal; font-size: 11px; color: var(--muted); margin-left: 4px; flex: 0 0 auto; }
 .sys-item .v .dot { flex: 0 0 7px; }
 
+/* ---------------- Cookie 状态 ---------------- */
+.cookie-card { margin-top: 18px; }
+.cookie-refresh { margin-left: auto; padding: 6px 12px; font-size: 12px; }
+.cookie-list { display: flex; flex-direction: column; }
+.cookie-row {
+  display: grid; grid-template-columns: 92px 92px minmax(0, 1fr) 104px;
+  gap: 12px; align-items: center;
+  padding: 10px 4px; border-bottom: 1px solid var(--border); font-size: 13px;
+}
+.cookie-row:last-child { border-bottom: none; }
+.cookie-row .ck-name { font-weight: 500; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cookie-row .ck-detail {
+  font-size: 12.5px; color: var(--text-2); min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.cookie-row .ck-time {
+  font-size: 11.5px; color: var(--muted); text-align: right;
+  font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+.cookie-row.is-bad .ck-detail { color: var(--red); }
+.badge.ok { background: var(--green-soft); color: var(--green); }
+.cookie-tip { font-size: 11.5px; color: var(--muted); margin-top: 10px; line-height: 1.6; }
+
 .sys-history { margin-top: 12px; font-size: 12px; }
 .sys-history summary {
   cursor: pointer; color: var(--muted); padding: 4px 0;
@@ -650,6 +675,8 @@ html[data-theme="light"] .log-box { background: #12151b; }
   .stat-value { font-size: 22px; }
   .card { padding: 14px; }
   .card-head { flex-wrap: wrap; gap: 4px; }
+  .cookie-row { grid-template-columns: 76px 68px minmax(0, 1fr); padding: 9px 2px; }
+  .cookie-row .ck-time { display: none; }
   .toolbar { gap: 8px; }
   .search { max-width: none; flex: 1 1 100%; }
   .toolbar-actions { width: 100%; justify-content: flex-end; }

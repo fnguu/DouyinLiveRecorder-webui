@@ -14,6 +14,7 @@
     logAuto: true,
     settingsGroup: '',
     lastAnchorKey: '',
+    cookies: null,
     auth: null,
     authMode: 'login',
     timers: [],
@@ -142,7 +143,7 @@
     $('#page-title').textContent = title;
     $('#page-sub').textContent = sub;
     if (view === 'settings') { loadSettings(); }
-    if (view === 'logs') { loadSystem(); loadLogs(); }
+    if (view === 'logs') { loadSystem(); loadLogs(); loadCookies(); }
     if (view !== 'settings') { $('#save-bar').classList.remove('show'); }
     else if (state.dirty.size) { $('#save-bar').classList.add('show'); }
   }
@@ -1130,6 +1131,93 @@
     }
   }
 
+  // ------------------------------------------------------------ Cookie 状态
+  const COOKIE_STATUS = {
+    valid: { text: '有效', cls: 'ok' },
+    expiring: { text: '即将过期', cls: 'live' },
+    invalid: { text: '已失效', cls: 'error' },
+    unknown: { text: '无法判定', cls: 'unknown' },
+    missing: { text: '未配置', cls: 'disabled' },
+  };
+
+  function timeShort(ts) {
+    if (!ts) return '—';
+    const d = new Date(ts * 1000);
+    if (Number.isNaN(d.getTime())) return '—';
+    const p = (n) => String(n).padStart(2, '0');
+    return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+  }
+
+  function renderCookies(data) {
+    state.cookies = data;
+    const alarming = (data && data.alarming) || [];
+    const badge = $('#nav-cookie-badge');
+    if (badge) {
+      badge.hidden = !alarming.length;
+      badge.textContent = alarming.length;
+      badge.title = alarming.length ? `${alarming.join('、')} 需要更新` : '';
+    }
+
+    const list = $('#cookie-list');
+    if (list) {
+      const items = (data && data.items) || [];
+      if (!items.length) {
+        list.innerHTML = '<div class="mini-empty" style="padding:14px 4px">还没有可检查的 Cookie</div>';
+      } else {
+        list.innerHTML = items.map((it) => {
+          const st = COOKIE_STATUS[it.status] || COOKIE_STATUS.unknown;
+          return `<div class="cookie-row ${it.status === 'invalid' ? 'is-bad' : ''}">
+            <span class="ck-name">${esc(it.platform)}</span>
+            <span class="badge ${st.cls}">${st.text}</span>
+            <span class="ck-detail" title="${esc(it.detail)}">${esc(it.detail)}</span>
+            <span class="ck-time">${timeShort(it.checked_at)}</span>
+          </div>`;
+        }).join('');
+      }
+    }
+
+    const hint = $('#cookie-hint');
+    if (hint) {
+      const hours = data && data.enabled ? data.interval_hours : 0;
+      if (!data || !data.enabled) {
+        hint.textContent = '失效提醒已关闭（可在全局设置的推送通知里打开）';
+      } else if (!data.checked_at) {
+        hint.textContent = '还没有检测过，点「立即检测」试试';
+      } else {
+        hint.textContent = `上次检测 ${timeShort(data.checked_at)} · 每 ${hours} 小时自动检查`;
+      }
+    }
+  }
+
+  async function loadCookies() {
+    try {
+      renderCookies(await api('/api/cookie/status'));
+    } catch (e) { /* 静默：卡片缺失不影响主流程 */ }
+  }
+
+  async function checkCookiesNow() {
+    const btn = $('#btn-cookie-check');
+    if (!btn || btn.disabled) return;
+    const label = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = '检测中…';
+    try {
+      const r = await api('/api/cookie/check', { method: 'POST' });
+      renderCookies(Object.assign({}, state.cookies || {}, r));
+      const n = (r.alarming || []).length;
+      if (n) {
+        toast(`${n} 个平台的 Cookie 需要处理${r.pushed ? '，已推送提醒' : ''}`, 'err');
+      } else {
+        toast('Cookie 检查完成，没有发现问题');
+      }
+    } catch (e) {
+      toast(e.message, 'err');
+    } finally {
+      btn.disabled = false;
+      btn.textContent = label;
+    }
+  }
+
   // ------------------------------------------------------------ 日志
   async function loadLogs() {
     try {
@@ -1265,6 +1353,8 @@
     });
     $('#log-lines').addEventListener('change', loadLogs);
     $('#btn-log-refresh').addEventListener('click', loadLogs);
+    const cookieBtn = $('#btn-cookie-check');
+    if (cookieBtn) cookieBtn.addEventListener('click', checkCookiesNow);
     $('#log-auto').addEventListener('change', (e) => { state.logAuto = e.target.checked; });
   }
 
@@ -1393,6 +1483,7 @@
   function startApp() {
     if (!bound) { bind(); bound = true; }
     refresh();
+    loadCookies();
     if (state.timers.length) return;
     state.timers.push(setInterval(() => {
       if (document.hidden) return;
@@ -1402,6 +1493,10 @@
     state.timers.push(setInterval(() => {
       if (state.view === 'overview' && !document.hidden) loadFiles();
     }, 10000));
+    // Cookie 状态变化很慢（后台按小时检查），一分钟拉一次足够
+    state.timers.push(setInterval(() => {
+      if (!document.hidden) loadCookies();
+    }, 60000));
   }
 
   function boot() {
