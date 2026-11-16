@@ -10,6 +10,14 @@ from .config_io import read_ini
 
 BOOL_VALUES = ('是', '否')
 
+# 键在 config.ini 里缺失时，界面显示程序实际使用的默认值。
+# 只覆盖「新增配置项」——老配置文件不会立刻有这些键，不能让界面误导成已经关闭。
+DEFAULTS = {
+    ('推送配置', 'cookie失效推送(是/否)'): '是',
+    ('推送配置', 'cookie检查间隔(小时)'): '6',
+    ('推送配置', 'cookie失效重复提醒(小时)'): '24',
+}
+
 GROUPS = [
     ('record', '录制与保存', '决定录制什么、存到哪、存成什么格式'),
     ('network', '网络与代理', '访问频率、代理、直播源质量'),
@@ -181,6 +189,10 @@ def build_schema() -> dict:
         value = ini.get(section, {}).get(key)
         if value is None and section not in ini:
             continue
+        # 键在旧配置文件里还不存在时显示程序实际使用的默认值，
+        # 免得界面写着「关闭」而后端按默认值在跑
+        if value is None:
+            value = DEFAULTS.get((section, key))
         fields.append({
             'section': section, 'key': key, 'label': label, 'type': ftype,
             'group': group, 'help': help_text,
