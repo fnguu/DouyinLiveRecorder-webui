@@ -358,12 +358,29 @@ def _touch_last_live(state: dict, tm: dict) -> None:
         anchors_mod.save_state(state)
 
 
+_LIVE_STATES = ('live', 'recording')
+
+
+def _display_order(items: List[dict]) -> List[dict]:
+    """主播列表的展示顺序：正在直播的最前，其余按最后直播时间由近到远，
+    从未直播过的（没有最后直播时间）按添加时间由新到旧兜底。
+
+    时间字段都是 ``YYYY-MM-DD HH:MM`` 这种可直接比较的字符串，空串按「最旧」处理，
+    所以连做三次稳定排序就能表达三级优先级，不需要解析时间。只在返回给界面的
+    副本上排，不动 state 与 URL_config.ini 里的顺序。
+    """
+    items.sort(key=lambda it: it.get('added_at') or '', reverse=True)
+    items.sort(key=lambda it: it.get('last_live_at') or '', reverse=True)
+    items.sort(key=lambda it: 0 if it.get('state') in _LIVE_STATES else 1)
+    return items
+
+
 @app.get('/api/anchors')
 def list_anchors():
     state = anchors_mod.sync_from_file()
     tm = thread_map()
     _touch_last_live(state, tm)
-    return {'items': [_state_of(a, tm) for a in state['anchors']]}
+    return {'items': _display_order([_state_of(a, tm) for a in state['anchors']])}
 
 
 @app.get('/api/anchors/{anchor_id}/files')

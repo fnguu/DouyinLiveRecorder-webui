@@ -287,7 +287,9 @@
       const data = await api('/api/anchors');
       const items = data.items || [];
       state.anchors = items;
-      const key = items.map((a) => `${a.id}:${a.enabled}:${a.notify}`).join('|');
+      // 指纹里带上顺序：主播开播会排到最前，只有整表重绘才能反映新位置
+      const key = items.map((a) => `${a.id}:${a.enabled}:${a.notify}`).join('|')
+        + '#' + items.map((a) => a.id).join(',');
       if (silent && key === state.lastAnchorKey) {
         // 结构未变，只更新状态徽章，避免整页重绘打断交互
         items.forEach((a) => {
