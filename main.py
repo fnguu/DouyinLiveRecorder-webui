@@ -70,6 +70,9 @@ danmaku_formats = 'xml,ass'
 danmaku_room_ids = {}
 # B 站弹幕单独一个开关：两个平台的抓取协议完全不同，出问题可以只关一边
 bili_danmaku_enabled = False
+# B 站开播快速检测：用 room_init 探活，让开播到录制的延迟不受整个轮询间隔拖累
+bili_fast_check = True
+bili_fast_interval = 45
 recording_time_list = {}
 script_path = os.path.split(os.path.realpath(sys.argv[0]))[0]
 config_file = f'{script_path}/config/config.ini'
@@ -707,6 +710,36 @@ def select_source_url(link, stream_info):
             return stream_info.get('flv_url')
 
     return stream_info.get('record_url')
+
+
+def bili_quick_live(record_url: str) -> bool:
+    """B 站开播探活：只问一次 room_init，回答「现在是不是直播中」。
+
+    这是 B 站最轻的公开接口——一个 GET、不带 Cookie、短号也能直接查
+    （live.bilibili.com/213 传 213 就行），所以可以放在两次完整检测之间高频调用，
+    把「开播 -> 开始录制」的延迟从整个轮询间隔压到几十秒。
+
+    任何异常都按「没开播」返回，让调用方照旧按正常间隔轮询：
+    探测本身出问题只会变慢，不会漏录。
+    """
+    match = re.search(r'bilibili\.com/(?:blanc/)?(\d+)', record_url or '')
+    if not match:
+        return False
+    room = match.group(1)
+    try:
+        with httpx.Client(timeout=6.0, follow_redirects=True) as client:
+            data = client.get(
+                'https://api.live.bilibili.com/room/v1/Room/room_init',
+                params={'id': room},
+                headers={
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+                                  '(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+                    'Referer': f'https://live.bilibili.com/{room}',
+                },
+            ).json()
+        return int((data.get('data') or {}).get('live_status') or 0) == 1
+    except Exception:
+        return False
 
 
 def start_record(url_data: tuple, count_variable: int = -1) -> None:
@@ -1819,11 +1852,23 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
                     x = num
 
                 # 这里是正常循环
+                # B 站额外插一层轻量探活：等待期间每「B站快速检测间隔」秒问一次 room_init，
+                # 一旦开播就立刻结束等待、马上去做完整检测（取流地址、起 ffmpeg），
+                # 不必等满整个轮询间隔。完整检测的频率不变，不会因此被风控。
+                probe_countdown = bili_fast_interval if (bili_fast_check and platform == 'B站直播') else 0
                 while x:
                     x = x - 1
                     if loop_time:
                         print(f'\r{anchor_name}循环等待{x}秒 ', end="")
                     time.sleep(1)
+                    if probe_countdown > 0:
+                        probe_countdown -= 1
+                        if probe_countdown == 0:
+                            probe_countdown = bili_fast_interval
+                            if bili_quick_live(record_url):
+                                logger.info(f'{anchor_name} 探到已开播，提前结束等待并开始检测')
+                                x = 0
+                                break
                 if loop_time:
                     print('\r检测直播间中...', end="")
         except Exception as e:
@@ -2081,6 +2126,12 @@ while True:
     danmaku_enabled = options.get(read_config_value(config, '录制设置', '是否录制弹幕(是/否)', "否"), False)
     danmaku_formats = read_config_value(config, '录制设置', '弹幕保存格式(逗号分隔)', "xml,ass")
     bili_danmaku_enabled = options.get(read_config_value(config, '录制设置', '是否录制B站弹幕(是/否)', "否"), False)
+    bili_fast_check = options.get(read_config_value(config, '录制设置', 'B站开播快速检测(是/否)', "是"), True)
+    try:
+        bili_fast_interval = int(read_config_value(config, '录制设置', 'B站快速检测间隔(秒)', 45))
+    except (TypeError, ValueError):
+        bili_fast_interval = 45
+    bili_fast_interval = max(15, min(300, bili_fast_interval))
     is_run_script = options.get(read_config_value(config, '录制设置', '是否录制完成后执行自定义脚本', "否"), False)
     custom_script = read_config_value(config, '录制设置', '自定义脚本执行命令', "") if is_run_script else None
     enable_proxy_platform = read_config_value(
