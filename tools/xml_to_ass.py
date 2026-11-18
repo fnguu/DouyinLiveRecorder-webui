@@ -1,125 +1,31 @@
 #!/usr/bin/env python
 # -*- encoding: utf-8 -*-
-"""把弹幕 XML 转成 ASS 字幕，参数对齐 DanmakuFactory 的默认预设。
+"""把弹幕 XML 转成 ASS 字幕（命令行版）。
 
-默认值（与 DanmakuFactory 预设页一致）：
-    字体大小 42、阴影 1、不透明度 180（ASS alpha 75）、描边 0
-    滚动弹幕通过时间 12 秒、固定弹幕停留时间 5 秒、显示用户名
+转换参数默认对齐 DanmakuFactory 预设：字号 42、阴影 1、不透明度 180、描边 0、
+滚动通过 12 秒、固定停留 5 秒、显示用户名、行数按画面高度自动铺满。
+分辨率默认取视频实际大小（ffprobe 读同目录录像），读不到才用 1920x1080。
 
-唯一的例外是分辨率：**默认按视频实际分辨率**（用 ffprobe 读同目录的录像文件），
-读不到才退回 1920x1080 —— PlayRes 和视频对不上时字幕会被拉扁或拉长。
+WebUI 的「系统状态 → 字幕转换」用的是同一套核心（src/danmaku_convert.py），
+参数也能在「全局设置 → 弹幕字幕」里改。
 
 用法：
-    # 转一个文件（.ass 写在 XML 旁边，已存在则跳过）
     python tools/xml_to_ass.py ./downloads/B站直播/某主播/xxx.danmaku.xml
-
-    # 整个目录，覆盖已有 .ass
     python tools/xml_to_ass.py ./downloads/B站直播 --overwrite
-
-    # 视频不在旁边时手动指定分辨率
     python tools/xml_to_ass.py xxx.danmaku.xml --resolution 2560x1440
 """
 import argparse
-import glob
 import os
 import re
 import sys
-import xml.etree.ElementTree as ET
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from src.danmaku import (FIXED_DURATION, SCROLL_DURATION, SUBTITLE_ALPHA,  # noqa: E402
-                         SUBTITLE_FONT_SIZE, SUBTITLE_OUTLINE, SUBTITLE_SHADOW,
-                         probe_playres, render_ass)
-
-DEFAULT_RESOLUTION = (1920, 1080)
-
-
-def _num(value, default=0.0) -> float:
-    try:
-        return float(str(value).strip())
-    except (TypeError, ValueError):
-        return default
-
-
-def read_records(xml_path: str) -> list:
-    """读 XML -> render_ass 需要的记录列表。
-
-    顺序即文件顺序（写入顺序），offset 是相对录制开始的秒数。
-    """
-    # 内嵌的 XSLT 样式表对渲染没用，且它依赖 xmlns:z 声明；
-    # 顺手摘掉再解析，能兼容样式表被编辑过、命名空间缺失的文件。
-    with open(xml_path, 'r', encoding='utf-8', errors='replace') as f:
-        text = re.sub(r'<XmlStyle>.*?</XmlStyle>', '', f.read(), flags=re.S)
-    root = ET.fromstring(text)
-    records = []
-
-    for node in root:
-        tag = node.tag
-        attrs = node.attrib
-        if tag == 'd':
-            p = (attrs.get('p') or '').split(',')
-            offset = _num(p[0]) if p else 0.0
-            records.append({
-                'type': 'chat', 'offset': offset, 'user': attrs.get('user') or '',
-                'content': node.text or '',
-            })
-        elif tag == 'gift':
-            name = attrs.get('giftname') or '礼物'
-            count = attrs.get('giftcount') or '1'
-            records.append({
-                'type': 'gift', 'offset': _num(attrs.get('ts')), 'user': attrs.get('user') or '',
-                'content': f'{name} x{count}', 'diamond': _num(attrs.get('price')),
-            })
-        elif tag == 'sc':
-            records.append({
-                'type': 'sc', 'offset': _num(attrs.get('ts')), 'user': attrs.get('user') or '',
-                'content': node.text or '', 'diamond': _num(attrs.get('price')),
-            })
-        elif tag == 'guard':
-            name = attrs.get('guardname') or '舰长'
-            records.append({
-                'type': 'guard', 'offset': _num(attrs.get('ts')), 'user': attrs.get('user') or '',
-                'content': f'开通 {name}', 'diamond': _num(attrs.get('price')),
-            })
-    return records
-
-
-def convert_one(xml_path: str, overwrite: bool, resolution, **render_kwargs) -> str:
-    ass_path = re.sub(r'\.danmaku\.xml$', '.danmaku.ass', xml_path)
-    if ass_path == xml_path:
-        ass_path = xml_path + '.ass'
-    if os.path.exists(ass_path) and not overwrite:
-        return f'跳过（已存在 {os.path.basename(ass_path)}，加 --overwrite 覆盖）'
-
-    base = re.sub(r'\.danmaku\.xml$', '', xml_path)
-    if resolution:
-        playres, source = resolution, '手动指定'
-    else:
-        probed = probe_playres(base)
-        playres, source = (probed, '视频') if probed else (DEFAULT_RESOLUTION, '默认')
-
-    records = read_records(xml_path)
-    if not records:
-        return '跳过（没有可渲染的弹幕）'
-
-    written, dropped = render_ass(records, ass_path, playres=playres, **render_kwargs)
-    return (f'{written} 条 -> {os.path.basename(ass_path)}'
-            f'（{playres[0]}x{playres[1]}，取自{source}' + (f'，丢弃 {dropped} 条' if dropped else '') + '）')
-
-
-def collect(paths):
-    files = []
-    for item in paths:
-        if os.path.isdir(item):
-            files.extend(sorted(glob.glob(os.path.join(item, '**', '*.danmaku.xml'), recursive=True)))
-        elif os.path.isfile(item):
-            files.append(item)
-        else:
-            print(f'跳过不存在的路径: {item}')
-    return files
+                         SUBTITLE_FONT_SIZE, SUBTITLE_OUTLINE, SUBTITLE_SHADOW)
+from src.danmaku_convert import convert_file, find_xml_files  # noqa: E402
 
 
 def parse_resolution(text):
@@ -151,7 +57,14 @@ def main(argv=None):
                         help='同屏最多几行（默认 0 = 按画面高度自动铺满）')
     args = parser.parse_args(argv)
 
-    files = collect(args.paths)
+    files = []
+    for item in args.paths:
+        if os.path.isdir(item):
+            files.extend(find_xml_files(item))
+        elif os.path.isfile(item):
+            files.append(item)
+        else:
+            print(f'跳过不存在的路径: {item}')
     if not files:
         print('没有找到 .danmaku.xml 文件')
         return 1
@@ -161,20 +74,20 @@ def main(argv=None):
                   alpha=args.alpha, outline=args.outline, shadow=args.shadow,
                   max_lines=args.max_lines)
 
-    done = 0
+    ok = 0
     for path in files:
-        try:
-            msg = convert_one(path, args.overwrite, args.resolution, **kwargs)
-        except Exception as exc:
-            print(f'✗ {os.path.basename(path)}: {exc}')
-            continue
-        if msg.startswith('跳过'):
-            print(f'- {os.path.basename(path)}: {msg}')
+        name = os.path.basename(path)
+        result = convert_file(path, overwrite=args.overwrite,
+                              resolution=args.resolution, **kwargs)
+        if result['status'] == 'ok':
+            ok += 1
+            print(f"+ {name}: {result['message']}")
+        elif result['status'] == 'skip':
+            print(f'- {name}: {result["message"]}')
         else:
-            done += 1
-            print(f'+ {os.path.basename(path)}: {msg}')
+            print(f"✗ {name}: {result['message']}")
 
-    print(f'\n文件 {len(files)} 个，生成 {done} 个 .ass')
+    print(f'\n文件 {len(files)} 个，生成 {ok} 个 .ass')
     return 0
 
 

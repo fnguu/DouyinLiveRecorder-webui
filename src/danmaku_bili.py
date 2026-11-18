@@ -286,7 +286,9 @@ class BiliDanmakuRecorder:
                  subtitle_max_lines: int = 0, subtitle_duration: float = 5.0,
                  subtitle_mode: str = 'scroll', playres: tuple = (1920, 1080),
                  subtitle_types=None, gift_min_diamond: float = 0.0,
-                 subtitle_font_size: int = 40, uid: str = '0'):
+                 subtitle_font_size: int = 42, subtitle_alpha: int = 75,
+                 subtitle_outline: int = 0, subtitle_shadow: int = 1,
+                 subtitle_scroll_duration: float = 12.0, uid: str = '0'):
         self.room_id = str(room_id)
         self.anchor_name = anchor_name or self.room_id
         self.cookie = cookie or ''
@@ -298,7 +300,12 @@ class BiliDanmakuRecorder:
         self.playres = (int(playres[0]), int(playres[1])) if playres else (1920, 1080)
         self.subtitle_types = tuple(subtitle_types or SUBTITLE_TYPES)
         self.gift_min_diamond = float(gift_min_diamond or 0)
-        self.subtitle_font_size = int(subtitle_font_size or 40)
+        self.subtitle_font_size = int(subtitle_font_size or 42)
+        # ASS 排版（对齐 DanmakuFactory 默认预设，可在 WebUI「弹幕字幕」里改）
+        self.subtitle_alpha = max(0, min(255, int(subtitle_alpha)))
+        self.subtitle_outline = max(0, int(subtitle_outline))
+        self.subtitle_shadow = max(0, int(subtitle_shadow))
+        self.subtitle_scroll_duration = max(1.0, float(subtitle_scroll_duration or 12.0))
         self.uid = str(uid or '0')
 
         self.base_path = _clean_base(save_file_path)
@@ -785,6 +792,8 @@ class BiliDanmakuRecorder:
             self.subtitle_mode, playres,
             font_size=self.subtitle_font_size,
             types=self.subtitle_types, gift_min_diamond=self.gift_min_diamond,
+            scroll_duration=self.subtitle_scroll_duration,
+            alpha=self.subtitle_alpha, outline=self.subtitle_outline, shadow=self.subtitle_shadow,
         )
         logger.debug(f'B站弹幕 ASS 已生成: {self.ass_path}（写入 {written} 条'
                      + (f'，丢弃 {dropped} 条' if dropped else '') + '）')

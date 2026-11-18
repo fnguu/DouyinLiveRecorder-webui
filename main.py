@@ -73,6 +73,16 @@ bili_danmaku_enabled = False
 # B 站开播快速检测：用 room_init 探活，让开播到录制的延迟不受整个轮询间隔拖累
 bili_fast_check = True
 bili_fast_interval = 45
+
+# ASS 字幕排版默认值，对齐 DanmakuFactory 默认预设；WebUI「弹幕字幕」里可改
+subtitle_font_size = 42
+subtitle_alpha = 75            # 不透明度 180 → 透明度 255-180
+subtitle_outline = 0
+subtitle_shadow = 1
+subtitle_scroll_duration = 12.0
+subtitle_fixed_duration = 5.0
+subtitle_max_lines = 0         # 0 = 按画面高度自动铺满
+subtitle_mode = 'scroll'
 recording_time_list = {}
 script_path = os.path.split(os.path.realpath(sys.argv[0]))[0]
 config_file = f'{script_path}/config/config.ini'
@@ -132,6 +142,20 @@ def ui_danmaku_ok(url: str) -> bool:
         return webui_bridge.is_danmaku_enabled(url)
     except Exception:
         return True
+
+
+def subtitle_style_kwargs() -> dict:
+    """配置里的 ASS 排版参数 -> start_danmaku 的关键字参数（抖音、B站共用）。"""
+    return {
+        'subtitle_font_size': subtitle_font_size,
+        'subtitle_alpha': subtitle_alpha,
+        'subtitle_outline': subtitle_outline,
+        'subtitle_shadow': subtitle_shadow,
+        'subtitle_scroll_duration': subtitle_scroll_duration,
+        'subtitle_max_lines': subtitle_max_lines,
+        'subtitle_duration': subtitle_fixed_duration,
+        'subtitle_mode': subtitle_mode,
+    }
 
 
 def danmaku_formats_list() -> list:
@@ -557,6 +581,7 @@ def check_subprocess(record_name: str, record_url: str, ffmpeg_command: list, sa
                         'cookie': dy_cookie,
                         'formats': _formats,
                         'sync_start': _sync,
+                        **subtitle_style_kwargs(),
                     },
                     name=f'danmaku_{record_name}',
                     daemon=True,
@@ -576,6 +601,7 @@ def check_subprocess(record_name: str, record_url: str, ffmpeg_command: list, sa
                         'cookie': bili_cookie,
                         'formats': _formats,
                         'sync_start': _sync,
+                        **subtitle_style_kwargs(),
                     },
                     name=f'bili_danmaku_{record_name}',
                     daemon=True,
@@ -2132,6 +2158,41 @@ while True:
     except (TypeError, ValueError):
         bili_fast_interval = 45
     bili_fast_interval = max(15, min(300, bili_fast_interval))
+
+    # 字幕排版：不透明度按 0-255 给人看，落盘要的是相反语义的 alpha
+    try:
+        subtitle_font_size = max(12, int(read_config_value(config, '录制设置', '弹幕字幕字号', 42)))
+    except (TypeError, ValueError):
+        subtitle_font_size = 42
+    try:
+        _opacity = int(read_config_value(config, '录制设置', '弹幕字幕不透明度(0-255)', 180))
+    except (TypeError, ValueError):
+        _opacity = 180
+    subtitle_alpha = 255 - max(0, min(255, _opacity))
+    try:
+        subtitle_outline = max(0, int(read_config_value(config, '录制设置', '弹幕字幕描边宽度', 0)))
+    except (TypeError, ValueError):
+        subtitle_outline = 0
+    try:
+        subtitle_shadow = max(0, int(read_config_value(config, '录制设置', '弹幕字幕阴影大小', 1)))
+    except (TypeError, ValueError):
+        subtitle_shadow = 1
+    try:
+        subtitle_scroll_duration = max(1.0, float(read_config_value(
+            config, '录制设置', '滚动弹幕通过时间(秒)', 12)))
+    except (TypeError, ValueError):
+        subtitle_scroll_duration = 12.0
+    try:
+        subtitle_fixed_duration = max(1.0, float(read_config_value(
+            config, '录制设置', '固定弹幕停留时间(秒)', 5)))
+    except (TypeError, ValueError):
+        subtitle_fixed_duration = 5.0
+    try:
+        subtitle_max_lines = max(0, int(read_config_value(config, '录制设置', '弹幕字幕同屏行数(0=自动)', 0)))
+    except (TypeError, ValueError):
+        subtitle_max_lines = 0
+    subtitle_mode = '固定' if str(read_config_value(
+        config, '录制设置', '弹幕字幕显示方式(滚动/固定)', '滚动')).strip().startswith('固定') else '滚动'
     is_run_script = options.get(read_config_value(config, '录制设置', '是否录制完成后执行自定义脚本', "否"), False)
     custom_script = read_config_value(config, '录制设置', '自定义脚本执行命令', "") if is_run_script else None
     enable_proxy_platform = read_config_value(

@@ -18,6 +18,7 @@ from fastapi.staticfiles import StaticFiles
 from . import anchors as anchors_mod
 from . import auth
 from . import cookie_health
+from . import subtitle
 from . import version as webui_version
 from . import media
 from .config_io import read_ini
@@ -617,6 +618,22 @@ def cookie_check():
         return cookie_health.run_check(notify=True)
     except Exception as exc:  # 单次检测异常不该把接口打挂
         raise HTTPException(status_code=500, detail=f'Cookie 检测失败：{exc}')
+
+
+@app.get('/api/subtitle/status')
+def subtitle_status():
+    """字幕转换状态 + 录像目录扫描结果（只读，不写文件）。"""
+    return subtitle.status()
+
+
+@app.post('/api/subtitle/convert')
+def subtitle_convert(payload: Optional[Dict[str, Any]] = Body(None)):
+    """把录像目录里的弹幕 XML 批量转成 ASS（后台线程，进度看 /api/subtitle/status）。"""
+    overwrite = bool((payload or {}).get('overwrite', False))
+    result = subtitle.start(overwrite=overwrite)
+    if not result.get('ok'):
+        raise HTTPException(status_code=409, detail=result.get('message', '无法开始转换'))
+    return result
 
 
 @app.get('/api/logs')

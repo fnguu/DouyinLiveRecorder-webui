@@ -15,6 +15,7 @@
     settingsGroup: '',
     lastAnchorKey: '',
     cookies: null,
+    subtitle: null,
     auth: null,
     authMode: 'login',
     timers: [],
@@ -143,7 +144,7 @@
     $('#page-title').textContent = title;
     $('#page-sub').textContent = sub;
     if (view === 'settings') { loadSettings(); }
-    if (view === 'logs') { loadSystem(); loadLogs(); loadCookies(); }
+    if (view === 'logs') { loadSystem(); loadLogs(); loadCookies(); loadSubtitle(); }
     if (view !== 'settings') { $('#save-bar').classList.remove('show'); }
     else if (state.dirty.size) { $('#save-bar').classList.add('show'); }
   }
@@ -1220,6 +1221,110 @@
     }
   }
 
+  // ------------------------------------------------------------ 字幕转换
+  let subtitleTimer = null;
+
+  function subtitleItem(key, value, sub, warn, title) {
+    return `<div class="subtitle-item${warn ? ' warn' : ''}">
+      <span class="k">${esc(key)}</span>
+      <span class="v"${title ? ` title="${esc(title)}"` : ''}>${value}${sub ? `<em>${esc(sub)}</em>` : ''}</span>
+    </div>`;
+  }
+
+  function renderSubtitle(d) {
+    state.subtitle = d;
+    const scan = (d && d.scan) || {};
+    const st = scan.style || {};
+    const opacity = st.alpha == null ? 180 : 255 - st.alpha;
+    const box = $('#subtitle-stats');
+    if (box) {
+      if (scan.exists === false) {
+        box.innerHTML = `<div class="mini-empty" style="padding:14px 4px">录像目录不存在：${esc(scan.root || '')}</div>`;
+      } else {
+        box.innerHTML = [
+          subtitleItem('录像目录', esc((scan.root || '').split(/[\\/]/).pop() || '—'),
+            '', false, scan.root || ''),
+          subtitleItem('弹幕 XML', `${scan.total || 0} 个`,
+            scan.unfinished ? `${scan.unfinished} 个仍在录制` : ''),
+          subtitleItem('缺 .ass', `${scan.missing || 0} 个`,
+            (scan.missing || 0) ? '可转换' : '已齐全', (scan.missing || 0) > 0),
+          subtitleItem('排版', `${st.font_size || 42} 号字`,
+            `透明度${opacity}·描边${st.outline == null ? 0 : st.outline}·阴影${st.shadow == null ? 1 : st.shadow}`, false,
+            `不透明度 ${opacity}，描边 ${st.outline == null ? 0 : st.outline}，阴影 ${st.shadow == null ? 1 : st.shadow}`),
+          subtitleItem('时长', `${st.scroll_duration || 12}s 滚动`,
+            `${st.duration || 5}s 固定·${st.max_lines ? st.max_lines + '行' : '行数自动'}`, false,
+            `滚动通过 ${st.scroll_duration || 12} 秒，固定停留 ${st.duration || 5} 秒，${st.max_lines ? '最多 ' + st.max_lines + ' 行' : '行数自动'}`),
+        ].join('');
+      }
+    }
+
+    const hint = $('#subtitle-hint');
+    if (hint) {
+      hint.textContent = d && d.running ? '正在转换…' : '参数取自「全局设置 → 弹幕字幕」';
+    }
+
+    const box2 = $('#subtitle-progress');
+    const fill = $('#subtitle-bar-fill');
+    const text = $('#subtitle-progress-text');
+    if (!box2 || !fill || !text) return;
+    if (d && d.running) {
+      box2.hidden = false;
+      const pct = d.total ? Math.round((d.done / d.total) * 100) : 0;
+      fill.style.width = `${pct}%`;
+      text.textContent = `${d.done}/${d.total} · 成功 ${d.ok} · 跳过 ${d.skipped} · 失败 ${d.failed}`
+        + (d.current ? ` · 正在处理 ${d.current}` : '');
+    } else {
+      const finished = d && d.finished_at;
+      if (!finished) { box2.hidden = true; return; }
+      box2.hidden = false;
+      fill.style.width = '100%';
+      text.textContent = `上次转换：共 ${d.total} 个，成功 ${d.ok}，跳过 ${d.skipped}，失败 ${d.failed}`
+        + (d.errors && d.errors.length ? `（${d.errors[d.errors.length - 1]}）` : '');
+    }
+  }
+
+  async function loadSubtitle() {
+    try {
+      const d = await api('/api/subtitle/status');
+      renderSubtitle(d);
+      if (d.running) startSubtitlePoll();
+      else stopSubtitlePoll();
+    } catch (e) { /* 静默 */ }
+  }
+
+  function startSubtitlePoll() {
+    if (subtitleTimer) return;
+    subtitleTimer = setInterval(loadSubtitle, 1500);
+  }
+
+  function stopSubtitlePoll() {
+    if (!subtitleTimer) return;
+    clearInterval(subtitleTimer);
+    subtitleTimer = null;
+  }
+
+  async function startSubtitleConvert() {
+    const btn = $('#btn-subtitle-convert');
+    const field = $('#subtitle-overwrite');
+    const overwrite = !!(field && field.checked);
+    if (!btn || btn.disabled) return;
+    if (overwrite && !window.confirm('会覆盖已有 .ass 文件，确定继续？')) return;
+    btn.disabled = true;
+    const label = btn.textContent;
+    btn.textContent = '启动中…';
+    try {
+      const r = await api('/api/subtitle/convert', { method: 'POST', body: { overwrite } });
+      toast(r.message || '已开始转换');
+      startSubtitlePoll();
+      loadSubtitle();
+    } catch (e) {
+      toast(e.message, 'err');
+    } finally {
+      btn.disabled = false;
+      btn.textContent = label;
+    }
+  }
+
   // ------------------------------------------------------------ 日志
   async function loadLogs() {
     try {
@@ -1357,6 +1462,10 @@
     $('#btn-log-refresh').addEventListener('click', loadLogs);
     const cookieBtn = $('#btn-cookie-check');
     if (cookieBtn) cookieBtn.addEventListener('click', checkCookiesNow);
+    const subRefresh = $('#btn-subtitle-refresh');
+    if (subRefresh) subRefresh.addEventListener('click', loadSubtitle);
+    const subConvert = $('#btn-subtitle-convert');
+    if (subConvert) subConvert.addEventListener('click', startSubtitleConvert);
     $('#log-auto').addEventListener('change', (e) => { state.logAuto = e.target.checked; });
   }
 

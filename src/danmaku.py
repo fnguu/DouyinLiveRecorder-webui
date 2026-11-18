@@ -522,7 +522,10 @@ class DanmakuRecorder:
                  subtitle_max_lines: int = 0, subtitle_duration: float = FIXED_DURATION,
                  subtitle_mode: str = 'scroll', playres: tuple[int, int] = (1920, 1080),
                  subtitle_types: tuple | list | None = None, gift_min_diamond: float = 0.0,
-                 subtitle_font_size: int = SUBTITLE_FONT_SIZE):
+                 subtitle_font_size: int = SUBTITLE_FONT_SIZE,
+                 subtitle_alpha: int = SUBTITLE_ALPHA, subtitle_outline: int = SUBTITLE_OUTLINE,
+                 subtitle_shadow: int = SUBTITLE_SHADOW,
+                 subtitle_scroll_duration: float = SCROLL_DURATION):
         self.room_id = str(room_id)
         self.anchor_name = anchor_name or self.room_id
         self.formats = [f.strip().lower() for f in formats if f.strip()] or ['xml', 'ass']
@@ -545,6 +548,11 @@ class DanmakuRecorder:
             self.subtitle_font_size = max(12, int(subtitle_font_size or SUBTITLE_FONT_SIZE))
         except (TypeError, ValueError):
             self.subtitle_font_size = SUBTITLE_FONT_SIZE
+        # ASS 排版（对齐 DanmakuFactory 默认预设，可在 WebUI「弹幕字幕」里改）
+        self.subtitle_alpha = max(0, min(255, int(subtitle_alpha if subtitle_alpha is not None else SUBTITLE_ALPHA)))
+        self.subtitle_outline = max(0, int(subtitle_outline if subtitle_outline is not None else SUBTITLE_OUTLINE))
+        self.subtitle_shadow = max(0, int(subtitle_shadow if subtitle_shadow is not None else SUBTITLE_SHADOW))
+        self.subtitle_scroll_duration = max(1.0, float(subtitle_scroll_duration or SCROLL_DURATION))
         self.base_path = clean_base_path(save_file_path)
 
         self.xml_path = f'{self.base_path}.danmaku.xml'
@@ -971,6 +979,8 @@ class DanmakuRecorder:
             self.subtitle_mode, playres,
             font_size=self.subtitle_font_size,
             types=self.subtitle_types, gift_min_diamond=self.gift_min_diamond,
+            scroll_duration=self.subtitle_scroll_duration,
+            alpha=self.subtitle_alpha, outline=self.subtitle_outline, shadow=self.subtitle_shadow,
         )
         logger.debug(
             f'弹幕 ASS 字幕已生成: {self.ass_path}'
@@ -995,14 +1005,19 @@ def start_danmaku(room_id: str, save_file_path: str, anchor_name: str = '',
                   subtitle_mode: str = 'scroll', playres: tuple[int, int] = (1920, 1080),
                   subtitle_types: tuple | list | None = None,
                   gift_min_diamond: float = 0.0,
-                  subtitle_font_size: int = SUBTITLE_FONT_SIZE) -> bool:
+                  subtitle_font_size: int = SUBTITLE_FONT_SIZE,
+                  subtitle_alpha: int = SUBTITLE_ALPHA, subtitle_outline: int = SUBTITLE_OUTLINE,
+                  subtitle_shadow: int = SUBTITLE_SHADOW,
+                  subtitle_scroll_duration: float = SCROLL_DURATION) -> bool:
     key = os.path.abspath(clean_base_path(save_file_path))
     with _sessions_lock:
         if key in _sessions:
             return False
         recorder = DanmakuRecorder(room_id, save_file_path, anchor_name, cookie, formats, proxy, sync_start,
                                    subtitle_max_lines, subtitle_duration, subtitle_mode, playres,
-                                   subtitle_types, gift_min_diamond, subtitle_font_size)
+                                   subtitle_types, gift_min_diamond, subtitle_font_size,
+                                   subtitle_alpha, subtitle_outline, subtitle_shadow,
+                                   subtitle_scroll_duration)
         ok = recorder.start()
         if ok:
             _sessions[key] = recorder
