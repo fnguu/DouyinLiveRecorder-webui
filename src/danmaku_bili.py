@@ -283,7 +283,7 @@ class BiliDanmakuRecorder:
     def __init__(self, room_id: str, save_file_path: str, anchor_name: str = '',
                  cookie: Optional[str] = None, formats=('xml', 'ass'),
                  sync_start: Optional[datetime] = None,
-                 subtitle_max_lines: int = 4, subtitle_duration: float = 5.0,
+                 subtitle_max_lines: int = 0, subtitle_duration: float = 5.0,
                  subtitle_mode: str = 'scroll', playres: tuple = (1920, 1080),
                  subtitle_types=None, gift_min_diamond: float = 0.0,
                  subtitle_font_size: int = 40, uid: str = '0'):
@@ -292,7 +292,7 @@ class BiliDanmakuRecorder:
         self.cookie = cookie or ''
         self.formats = [f.strip().lower() for f in formats if f.strip()] or ['xml', 'ass']
         self.sync_start = sync_start
-        self.subtitle_max_lines = max(1, int(subtitle_max_lines or 4))
+        self.subtitle_max_lines = max(0, int(subtitle_max_lines or 0))
         self.subtitle_duration = float(subtitle_duration or 5.0)
         self.subtitle_mode = 'fixed' if str(subtitle_mode).strip().lower() in ('fixed', '固定') else 'scroll'
         self.playres = (int(playres[0]), int(playres[1])) if playres else (1920, 1080)
@@ -762,7 +762,7 @@ class BiliDanmakuRecorder:
     def _write_ass(self) -> None:
         if 'ass' not in self.formats:
             return
-        from .danmaku import render_ass  # 复用同一套 ASS 渲染，避免两份实现漂移
+        from .danmaku import probe_playres, render_ass  # 复用同一套 ASS 渲染，避免两份实现漂移
         records = [r for r in self._records if str(r.get('type') or '').lower() in self.subtitle_types]
         if not records:
             return
@@ -778,9 +778,11 @@ class BiliDanmakuRecorder:
             kept.append(r)
         if not kept:
             return
+        # PlayRes 以实际录像分辨率为准，取不到才退回构造时的值（默认 1920x1080）
+        playres = probe_playres(self.base_path) or self.playres
         written, dropped = render_ass(
             kept, self.ass_path, self.subtitle_max_lines, self.subtitle_duration,
-            self.subtitle_mode, self.playres,
+            self.subtitle_mode, playres,
             font_size=self.subtitle_font_size,
             types=self.subtitle_types, gift_min_diamond=self.gift_min_diamond,
         )

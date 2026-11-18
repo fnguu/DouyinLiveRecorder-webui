@@ -59,7 +59,11 @@ def to_number(value, default=0.0) -> float:
 
 
 def number_text(value: float) -> str:
-    return f'{value:g}'
+    """金额一律写成普通数字：%g 会把 1598000 缩成 1.598e+06。"""
+    value = float(value)
+    if value.is_integer():
+        return str(int(value))
+    return f'{value:.3f}'.rstrip('0').rstrip('.')
 
 
 # ---------------------------------------------------------------- 主体
@@ -88,7 +92,7 @@ class Converter:
         out = []
         guard_seen = {}          # (uid, 5 秒桶) -> out 中的行号
         stats = dict(sc=0, guard=0, guard_dropped=0, gift_fixed=0, gift_unit=0,
-                     gift_unclear=0, header=0)
+                     gift_unclear=0, header=0, price_fmt=0)
 
         for line in lines:
             m = TAG_RE.match(line)
@@ -97,7 +101,12 @@ class Converter:
                 continue
             head, attrs, tail, rest = m.groups()
             tag = re.match(r'\s*<(\w+)', head).group(1)
-            price = to_number(get_attr(attrs, 'price'))
+            raw_price = get_attr(attrs, 'price')
+            price = to_number(raw_price)
+            # 早期版本用 %g 写金额，1998000 会被写成 1.998e+06，表格里像乱码
+            if raw_price and 'e' in raw_price.lower():
+                attrs = set_attr(attrs, 'price', number_text(price))
+                stats['price_fmt'] += 1
 
             if tag in ('sc', 'guard'):
                 # 逐条判断有没有 unit：容忍「转换到一半又被录制进程续写」的文件
@@ -313,7 +322,7 @@ def main(argv=None):
                   + ('，已写回（原文件留为 .damaged）' if args.apply else '（未改动，加 --apply 写回）'))
         return 0
     total = dict(sc=0, guard=0, guard_dropped=0, gift_fixed=0, gift_unit=0,
-                 gift_unclear=0, header=0)
+                 gift_unclear=0, header=0, price_fmt=0)
     touched = 0
 
     for path in files:

@@ -93,11 +93,18 @@ def _offset_text(record: dict) -> str:
 
 
 def _price_text(record: dict) -> str:
+    """金额写成人能读的数字。
+
+    不能用 %g：它的默认精度是 6 位有效数字，1998000 会变成 1.998e+06，
+    表格里直接显示成科学计数法。整数一律按整数输出，非整数最多保留 3 位小数。
+    """
     try:
         price = float(record.get('diamond') or record.get('price') or 0)
     except (TypeError, ValueError):
         price = 0.0
-    return f'{price:g}'
+    if price.is_integer():
+        return str(int(price))
+    return f'{price:.3f}'.rstrip('0').rstrip('.')
 
 
 def _unit_attr(record: dict) -> str:

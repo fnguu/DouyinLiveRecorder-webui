@@ -23,7 +23,7 @@
 > ```
 >
 > 详细说明见 **[WEBUI.md](WEBUI.md)**，容器参数详解见下方「容器运行」章节。
-> 当前 WebUI 版本 **1.0.0.26**（版本号末位为修订次数，见「系统状态」页的更新记录）。
+> 当前 WebUI 版本 **1.0.0.27**（版本号末位为修订次数，见「系统状态」页的更新记录）。
 >
 > ---
 >
@@ -127,7 +127,7 @@ downloads/抖音直播/某主播/某主播_2026-11-14_20-30-00.danmaku.ass
 |---|---|
 | 支持平台 | 抖音、B 站（其余平台暂不支持） |
 | XML | B 站标准弹幕格式（`<d p="...">`），兼容 DanmakuFactory、PotPlayer 等工具；内嵌 XSLT 样式，**浏览器双击即可预览**用户名/时间/用户ID/内容表格 |
-| ASS | 可直接挂载进播放器或烧进画面，文本格式为 `用户名:弹幕内容`，礼物/醒目留言/上舰带【礼物】【醒目留言】【上舰】前缀 |
+| ASS | 可直接挂载进播放器或烧进画面，文本格式为 `用户名:弹幕内容`，礼物/醒目留言/上舰带【礼物】【醒目留言】【上舰】前缀；排版参数对齐 **DanmakuFactory 默认预设**（字号 42 / 阴影 1 / 不透明度 180 / 描边 0 / 滚动通过 12 秒 / 固定停留 5 秒），分辨率取**实际录像分辨率**（ffprobe 探测），不会再出现字幕被拉扁的情况 |
 | 内容类型 | 弹幕、表情；B 站另含礼物、醒目留言（SC）、上舰（舰长/提督/总督）；抖音无 SC/上舰 |
 | 写入方式 | 边录边追加，进程异常退出也只丢收尾标签，已写入的弹幕不会丢 |
 | 开关 | 全局开关在「设置」页，单主播开关在主播列表；可在录像弹窗里直接下载 |
@@ -138,6 +138,23 @@ downloads/抖音直播/某主播/某主播_2026-11-14_20-30-00.danmaku.ass
 - 抖音建议同样填 Cookie，能显著降低接口风控导致的「已开播但监控不到」以及礼物消息缺失。
 - **金额口径统一为金瓜子**（1 元 = 1000 金瓜子）：`gift` / `sc` / `guard` 的 `price` 都是金瓜子总额，并带 `unit="金瓜子"` 属性标明单位。SC 和上舰在 B 站接口里原始单位是「元」，落盘时已折算；连击礼物按「单价 × 数量」计算；一次上舰 B 站会连发 `GUARD_BUY` / `USER_TOAST_MSG`，只记一条。
 - 弹幕转换示例：`DanmakuFactory -i xxx.danmaku.xml -o xxx.ass`。
+
+需要重新生成 ASS 时用自带工具，参数与 DanmakuFactory 默认预设一致（分辨率仍取视频实际值）：
+
+```bash
+# 转单个文件（.ass 已存在则跳过）
+python tools/xml_to_ass.py ./downloads/B站直播/某主播/xxx.danmaku.xml
+# 整个目录，覆盖旧的 .ass
+python tools/xml_to_ass.py ./downloads/B站直播 --overwrite
+# 视频不在旁边时手动指定分辨率
+python tools/xml_to_ass.py xxx.danmaku.xml --resolution 2560x1440
+```
+
+容器里跑（`ffprobe` 在镜像内，能自动读分辨率）：
+
+```bash
+docker exec -it douyin-live-recorder python tools/xml_to_ass.py /app/downloads/B站直播 --overwrite
+```
 
 ### 历史文件归一化
 

@@ -20,12 +20,15 @@
 依赖：websocket-client、protobuf（已随 requirements 追加）
 """
 
+import glob
 import gzip
 import hashlib
 import json
 import os
 import random
 import re
+import shutil
+import subprocess
 import sys
 import threading
 import time
@@ -320,8 +323,57 @@ def ass_font_name() -> str:
     return 'WenQuanYi Micro Hei'
 
 
-SUBTITLE_FONT_SIZE = 40
+# ASS 字幕的默认排版，对齐 DanmakuFactory 的默认预设：
+#   字体 42 / 阴影 1 / 不透明度 180 / 描边 0 / 滚动通过 12 秒 / 固定停留 5 秒
+# 这样录完直接得到的 .ass 和用 DanmakuFactory 手工转出来的观感一致。
+SUBTITLE_FONT_SIZE = 42
+SUBTITLE_ALPHA = 75          # 不透明度 180 → ASS 透明度 = 255-180
+SUBTITLE_OUTLINE = 0
+SUBTITLE_SHADOW = 1
+SCROLL_DURATION = 12.0       # 滚动弹幕通过时间（秒）
+FIXED_DURATION = 5.0         # 固定弹幕停留时间（秒）
 _LINE_HEIGHT_RATIO = 1.45
+
+_VIDEO_EXTS = ('.mp4', '.ts', '.mkv', '.flv')
+
+
+def probe_playres(base_path: str) -> Optional[tuple]:
+    """从同名的录像文件读视频分辨率，读不到返回 None。
+
+    ASS 的 PlayRes 必须和视频一致，libass 会按两者的比例缩放，对不上字幕就被
+    拉扁或拉长。所以生成的 .ass 一律以实际视频为准，1920x1080 只是兜底。
+    """
+    exe = shutil.which('ffprobe')
+    if not exe:
+        return None
+    # 分段录制时文件叫 xxx_001.ts，所以先在「同名文件」里找，再退回「同前缀的片段」
+    candidates = [f'{base_path}{ext}' for ext in _VIDEO_EXTS]
+    candidates = [p for p in candidates if os.path.exists(p)]
+    if not candidates:
+        for ext in _VIDEO_EXTS:
+            hits = sorted(glob.glob(f'{base_path}_*{ext}'))
+            if hits:
+                candidates = hits[:1]
+                break
+    for path in candidates:
+        try:
+            out = subprocess.run(
+                [exe, '-v', 'error', '-select_streams', 'v:0',
+                 '-show_entries', 'stream=width,height', '-of', 'csv=p=0:s=x', path],
+                capture_output=True, text=True, timeout=10,
+            )
+            width, height = (out.stdout or '').strip().split('\n')[0].split('x')[:2]
+            width, height = int(width), int(height)
+            if width > 0 and height > 0:
+                return width, height
+        except Exception:
+            continue
+    return None
+
+
+def _ass_colour(rgb: str, alpha: int = SUBTITLE_ALPHA) -> str:
+    """ASS 颜色是 &HAABBGGRR，alpha 越大越透明（0 完全不透明）。"""
+    return f'&H{max(0, min(255, int(alpha))):02X}{rgb}'
 
 
 def _escape_ass_text(text: str) -> str:
@@ -337,21 +389,28 @@ def _ass_text_width(text: str, font_size: int = SUBTITLE_FONT_SIZE) -> float:
     return max(width, font_size * 2) + font_size * 0.5
 
 
-def render_ass(records: list[dict], ass_path: str, max_lines: int = 4, duration: float = 5.0,
+def render_ass(records: list[dict], ass_path: str, max_lines: int = 4, duration: float = FIXED_DURATION,
                mode: str = 'scroll', playres: tuple[int, int] = (1920, 1080),
                font_size: int = SUBTITLE_FONT_SIZE, types: tuple | list | None = None,
-               gift_min_diamond: float = 0.0) -> tuple[int, int]:
+               gift_min_diamond: float = 0.0, scroll_duration: float = SCROLL_DURATION,
+               alpha: int = SUBTITLE_ALPHA, outline: int = SUBTITLE_OUTLINE,
+               shadow: int = SUBTITLE_SHADOW) -> tuple[int, int]:
     """把弹幕渲染成 ASS 字幕文件，返回 (写入条数, 丢弃条数)。
 
-    mode='scroll'：弹幕从画面右侧滚动到左侧（用 move 标签），多条在不同轨道上同时飘；
+    mode='scroll'：弹幕从画面右侧滚动到左侧（用 move 标签），每条走 scroll_duration 秒；
     mode='fixed'：固定在画面顶部，每条停留 duration 秒后换下一条。
 
     playres 必须与最终视频的分辨率一致：libass 按 PlayRes 与实际画面的比例缩放，
-    宽高比对不上时字幕会被拉扁或拉长。
+    宽高比对不上时字幕会被拉扁或拉长。调用方应先用 probe_playres() 取实际分辨率。
     """
-    max_lines = max(1, int(max_lines or 4))
-    duration = float(duration or 5.0)
+    duration = float(duration or FIXED_DURATION)
+    scroll_duration = float(scroll_duration or SCROLL_DURATION)
     width, height = int(playres[0]), int(playres[1])
+    line_height = int(font_size * _LINE_HEIGHT_RATIO)
+    top_margin = max(12, int(height * 0.03))
+    # 0 = 自动：按画面高度能放几行就放几行（对齐 DanmakuFactory 的「显示区域 1.0、密度不限」）
+    limit = int(max_lines or 0)
+    max_lines = limit if limit > 0 else max(1, int((height - top_margin) * 0.97 // line_height))
     scroll = str(mode).strip().lower() not in ('fixed', '固定', '0', 'false', 'no')
 
     if scroll:
@@ -359,7 +418,7 @@ def render_ass(records: list[dict], ass_path: str, max_lines: int = 4, duration:
     else:
         align, margin_v = 8, 36
     font = ass_font_name()
-    gift_size = int(font_size * 1.15)
+    gift_size = font_size
     header = (
         '[Script Info]\n'
         'ScriptType: v4.00+\n'
@@ -370,22 +429,20 @@ def render_ass(records: list[dict], ass_path: str, max_lines: int = 4, duration:
         '[V4+ Styles]\n'
         'Format: Name, Fontname, Fontsize, PrimaryColour, OutlineColour, BackColour, Bold, Italic, '
         'BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n'
-        # 常规弹幕：白字黑描边
-        f'Style: Danmaku,{font},{font_size},&H00FFFFFF,&H00000000,&H80000000,'
-        f'0,0,1,2,0,{align},0,0,{margin_v},1\n'
-        # 礼物：金色加粗、描边更粗
-        f'Style: Gift,{font},{gift_size},&H0000D7FF,&H00101010,&H80300000,'
-        f'-1,0,1,3,1,{align},0,0,{margin_v},1\n'
+        # 常规弹幕：白字，描边/阴影/透明度按 DanmakuFactory 默认预设
+        f'Style: Danmaku,{font},{font_size},{_ass_colour("FFFFFF", alpha)},&H00000000,&H80000000,'
+        f'0,0,1,{int(outline)},{int(shadow)},{align},0,0,{margin_v},1\n'
+        # 礼物/SC/上舰：同字号，金色加粗，便于在飘屏里一眼看出
+        f'Style: Gift,{font},{gift_size},{_ass_colour("00D7FF", alpha)},&H00101010,&H80300000,'
+        f'-1,0,1,{int(outline)},{int(shadow)},{align},0,0,{margin_v},1\n'
         # 表情（抖音小红心/微笑这类动态表情的名字）：浅黄
-        f'Style: Emoji,{font},{font_size},&H00A0F0FF,&H00101010,&H80000000,'
-        f'0,0,1,2,0,{align},0,0,{margin_v},1\n'
+        f'Style: Emoji,{font},{font_size},{_ass_colour("A0F0FF", alpha)},&H00101010,&H80000000,'
+        f'0,0,1,{int(outline)},{int(shadow)},{align},0,0,{margin_v},1\n'
         '\n'
         '[Events]\n'
         'Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n'
     )
 
-    line_height = int(font_size * _LINE_HEIGHT_RATIO)
-    top_margin = max(12, int(height * 0.03))
     events: list[str] = []
     tracks: list[float] = []  # 每条轨道当前的占用结束时间
     dropped = 0
@@ -425,13 +482,13 @@ def render_ass(records: list[dict], ass_path: str, max_lines: int = 4, duration:
             else:
                 dropped += 1
                 continue
-        end = start + duration
+        end = start + (scroll_duration if scroll else duration)
         prefix = ''
         if scroll:
             text_width = _ass_text_width(text, font_size)
             # 同轨道的两条不能追尾：前一条得先把尾部挪进画面，后一条才能出发，
             # 所需时间占整趟行程的比例正好是「宽度 / 行程总长」
-            tracks[slot] = start + duration * text_width / (width + text_width) + 0.25
+            tracks[slot] = start + scroll_duration * text_width / (width + text_width) + 0.25
             y = top_margin + slot * line_height
             prefix = '{\\an7\\move(' + f'{width},{y},{-int(text_width)},{y}' + ')}'
         else:
@@ -462,7 +519,7 @@ class DanmakuRecorder:
     def __init__(self, room_id: str, save_file_path: str, anchor_name: str = '',
                  cookie: Optional[str] = None, formats=('xml', 'ass'),
                  proxy: Optional[str] = None, sync_start: Optional[datetime] = None,
-                 subtitle_max_lines: int = 4, subtitle_duration: float = 5.0,
+                 subtitle_max_lines: int = 0, subtitle_duration: float = FIXED_DURATION,
                  subtitle_mode: str = 'scroll', playres: tuple[int, int] = (1920, 1080),
                  subtitle_types: tuple | list | None = None, gift_min_diamond: float = 0.0,
                  subtitle_font_size: int = SUBTITLE_FONT_SIZE):
@@ -473,8 +530,9 @@ class DanmakuRecorder:
         self.proxy = proxy
         self.sync_start = sync_start
         # 弹幕只占顶部若干行，避免密集时铺满画面
-        self.subtitle_max_lines = max(1, int(subtitle_max_lines or 4))
-        self.subtitle_duration = float(subtitle_duration or 5.0)
+        # 0 = 自动铺满画面，具体行数在 render_ass 里按分辨率算
+        self.subtitle_max_lines = max(0, int(subtitle_max_lines or 0))
+        self.subtitle_duration = float(subtitle_duration or FIXED_DURATION)
         # scroll=滚动飘屏 / fixed=顶部固定逐条替换
         self.subtitle_mode = 'fixed' if str(subtitle_mode).strip().lower() in ('fixed', '固定') else 'scroll'
         self.playres = (int(playres[0]), int(playres[1])) if playres else (1920, 1080)
@@ -906,9 +964,11 @@ class DanmakuRecorder:
 
     def _write_ass(self, records: list[dict]) -> None:
         """生成 ASS 字幕。默认走滚动飘屏，多轨道并发，具体渲染见 render_ass。"""
+        # PlayRes 以实际录像分辨率为准，取不到才退回构造时的值（默认 1920x1080）
+        playres = probe_playres(self.base_path) or self.playres
         written, dropped = render_ass(
             records, self.ass_path, self.subtitle_max_lines, self.subtitle_duration,
-            self.subtitle_mode, self.playres,
+            self.subtitle_mode, playres,
             font_size=self.subtitle_font_size,
             types=self.subtitle_types, gift_min_diamond=self.gift_min_diamond,
         )
@@ -916,7 +976,7 @@ class DanmakuRecorder:
             f'弹幕 ASS 字幕已生成: {self.ass_path}'
             f'(写入 {written} 条，'
             + ('飘屏滚动' if self.subtitle_mode == 'scroll' else '顶部固定')
-            + f'，最多 {self.subtitle_max_lines} 行'
+            + (f'，最多 {self.subtitle_max_lines} 行' if self.subtitle_max_lines else '，按画面高度铺满')
             + (f'，因轨道占满丢弃 {dropped} 条' if dropped else '')
             + ')'
         )
@@ -931,7 +991,7 @@ _sessions_lock = threading.Lock()
 def start_danmaku(room_id: str, save_file_path: str, anchor_name: str = '',
                   cookie: Optional[str] = None, formats=('json',),
                   proxy: Optional[str] = None, sync_start: Optional[datetime] = None,
-                  subtitle_max_lines: int = 4, subtitle_duration: float = 5.0,
+                  subtitle_max_lines: int = 0, subtitle_duration: float = FIXED_DURATION,
                   subtitle_mode: str = 'scroll', playres: tuple[int, int] = (1920, 1080),
                   subtitle_types: tuple | list | None = None,
                   gift_min_diamond: float = 0.0,
