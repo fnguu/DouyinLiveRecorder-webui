@@ -26,12 +26,14 @@ import os
 import re
 import shutil
 import sys
+import xml.etree.ElementTree as ET
 
 UNIT = '金瓜子'
 PER_YUAN = 1000            # 1 元 = 1000 金瓜子
 GUARD_DEDUPE_SECONDS = 5.0
 
 TAG_RE = re.compile(r'^(\s*<(?:gift|sc|guard)\b)([^>]*?)(/?>)(.*)$', re.S)
+RECORD_RE = re.compile(r'^\s*<(?:d|gift|sc|guard)\b')
 MARKER = f'price_unit="{UNIT}"'
 
 
@@ -77,12 +79,16 @@ class Converter:
         if not force and not self._is_bilibili(lines):
             return {'skipped': '看起来不是 B 站弹幕文件（没有 sc/guard 板块）'}
 
-        already = any(MARKER in line for line in lines[:40])
+        if not force and not text.rstrip().endswith('</i>'):
+            return {'skipped': '文件还没收尾（缺 </i>，可能正在录制），跳过以免跟录制进程抢写'}
+
+        header_marked = any(MARKER in line for line in lines[:40])
         unit_prices = self._gift_unit_prices(lines) if self.fix_gift else {}
 
         out = []
         guard_seen = {}          # (uid, 5 秒桶) -> out 中的行号
-        stats = dict(sc=0, guard=0, guard_dropped=0, gift_fixed=0, gift_unclear=0)
+        stats = dict(sc=0, guard=0, guard_dropped=0, gift_fixed=0, gift_unit=0,
+                     gift_unclear=0, header=0)
 
         for line in lines:
             m = TAG_RE.match(line)
@@ -94,12 +100,12 @@ class Converter:
             price = to_number(get_attr(attrs, 'price'))
 
             if tag in ('sc', 'guard'):
-                if not already:
+                # 逐条判断有没有 unit：容忍「转换到一半又被录制进程续写」的文件
+                if get_attr(attrs, 'unit') is None:
                     price = round(price * PER_YUAN)
                     attrs = set_attr(attrs, 'price', number_text(price))
-                    stats['sc' if tag == 'sc' else 'guard'] += 1
-                if get_attr(attrs, 'unit') is None:
                     attrs = set_attr(attrs, 'unit', UNIT)
+                    stats['sc' if tag == 'sc' else 'guard'] += 1
 
             if tag == 'guard':
                 if self.dedupe_guard:
@@ -121,6 +127,7 @@ class Converter:
             if tag == 'gift':
                 if get_attr(attrs, 'unit') is None:
                     attrs = set_attr(attrs, 'unit', UNIT)
+                    stats['gift_unit'] += 1
                 if self.fix_gift:
                     name = get_attr(attrs, 'giftname') or ''
                     count = int(to_number(get_attr(attrs, 'giftcount'), 1)) or 1
@@ -135,14 +142,15 @@ class Converter:
             out.append(f'{head}{attrs}{tail}{rest}')
 
         # 头部：表头补单位、RecordInfo 加 price_unit
-        if not already:
+        if not header_marked:
             out = self._mark_header(out)
+            stats['header'] = 1
 
         self.stats = stats
         return {
             'lines': len(lines),
             'text': newline.join(out),
-            'already_converted': already,
+            'already_converted': header_marked,
             'stats': stats,
         }
 
@@ -215,6 +223,65 @@ def collect(paths):
     return files
 
 
+def repair_file(path: str, conv: 'Converter', apply: bool = False, force: bool = False) -> dict:
+    """修复「录制中被写坏」的文件：某一行被续写的记录顶掉，两段粘在一起。
+
+    成因：录制进程的 XML 句柄是普通写模式（不是 O_APPEND），外部脚本改写文件后，
+    它下一次写入仍按自己的旧偏移落笔，正好压在上一条记录身上。表现就是
+    ``<d p="旧记录前段  <d p="新记录全文</d>`` 挤在同一行，旧记录尾部丢失。
+
+    修复办法：以同名 .bak（被改写之前的完整快照）里的记录为准，拼上当前文件里
+    损坏行之后的记录，重排后整份重写 —— 因为此时录制已经结束，不存在再被顶掉
+    的问题。缺 .bak 就拒绝执行，绝不猜。
+    """
+    bak = path + '.bak'
+    if not os.path.exists(bak):
+        return {'error': '缺少同名 .bak，无法还原被截断的记录'}
+    with open(path, 'r', encoding='utf-8', errors='replace', newline='') as f:
+        cur_text = f.read()
+    if not force and not cur_text.rstrip().endswith('</i>'):
+        return {'error': '文件还没收尾（缺 </i>，仍在录制），等这场录完再修'}
+
+    newline = '\r\n' if '\r\n' in cur_text else '\n'
+    lines = cur_text.split(newline)
+    bad_idx = next((i for i, ln in enumerate(lines) if ln.count('<d p=') > 1), None)
+    if bad_idx is None:
+        return {'error': '没找到被顶掉的拼接行，无需修复'}
+
+    bad_line = lines[bad_idx]
+    second = bad_line.find('<d p=', bad_line.find('<d p=') + 1)
+    recovered = bad_line[second:].strip() if second > 0 else ''
+
+    head_end = next((i for i, ln in enumerate(lines) if '</XmlStyle>' in ln), None)
+    if head_end is None:
+        return {'error': '找不到文件头部（XmlStyle），不敢动'}
+    header = lines[:head_end + 1]
+
+    with open(bak, 'r', encoding='utf-8', errors='replace', newline='') as f:
+        bak_text = f.read()
+    bak_records = [ln for ln in bak_text.split('\n') if RECORD_RE.match(ln)]
+    after = [ln for ln in lines[bad_idx + 1:] if RECORD_RE.match(ln)]
+
+    merged = header + bak_records + ([recovered] if recovered else []) + after + ['</i>']
+    text = newline.join(merged)
+    try:
+        ET.fromstring(text)
+    except ET.ParseError as exc:
+        return {'error': f'拼出来的内容解析失败，已放弃写入：{exc}'}
+
+    if apply:
+        shutil.copy2(path, path + '.damaged')
+        with open(path, 'w', encoding='utf-8', newline='') as f:
+            f.write(text)
+        # 拼回来的旧记录可能还是「元」口径，顺手再走一遍归一化
+        result = conv.convert(path, force=True)
+        if 'text' in result:
+            with open(path, 'w', encoding='utf-8', newline='') as f:
+                f.write(result['text'])
+    return {'recovered': recovered[:80], 'bak_records': len(bak_records),
+            'after_records': len(after), 'text': text}
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description='把 B 站弹幕 XML 的金额统一成金瓜子')
     parser.add_argument('paths', nargs='+', help='文件或目录（目录会递归找 *.danmaku.xml）')
@@ -223,6 +290,8 @@ def main(argv=None):
     parser.add_argument('--no-dedupe-guard', action='store_true', help='不合并重复的上舰记录')
     parser.add_argument('--no-fix-gift', action='store_true', help='不修正连击礼物的金额')
     parser.add_argument('--force', action='store_true', help='非 B 站文件也强行处理')
+    parser.add_argument('--repair', action='store_true',
+                        help='修复「录制中被外部改写、导致两段记录粘在一行」的文件（需同名 .bak）')
     args = parser.parse_args(argv)
 
     files = collect(args.paths)
@@ -231,7 +300,20 @@ def main(argv=None):
         return 1
 
     conv = Converter(dedupe_guard=not args.no_dedupe_guard, fix_gift=not args.no_fix_gift)
-    total = dict(sc=0, guard=0, guard_dropped=0, gift_fixed=0, gift_unclear=0)
+
+    if args.repair:
+        for path in files:
+            info = repair_file(path, conv, apply=args.apply, force=args.force)
+            name = os.path.basename(path)
+            if 'error' in info:
+                print(f'✗ {name}: {info["error"]}')
+                continue
+            print(f'{"+" if args.apply else "·"} {name}: '
+                  f'从 .bak 取回 {info["bak_records"]} 条记录，损坏行之后 {info["after_records"]} 条'
+                  + ('，已写回（原文件留为 .damaged）' if args.apply else '（未改动，加 --apply 写回）'))
+        return 0
+    total = dict(sc=0, guard=0, guard_dropped=0, gift_fixed=0, gift_unit=0,
+                 gift_unclear=0, header=0)
     touched = 0
 
     for path in files:
@@ -245,17 +327,18 @@ def main(argv=None):
             print(f'- {name}: {result["skipped"]}')
             continue
         stats = result['stats']
-        changed = any(stats[k] for k in ('sc', 'guard_dropped', 'gift_fixed')) or not result['already_converted']
+        changed = any(stats.values())
         for k in total:
             total[k] += stats.get(k, 0)
         if not changed:
             print(f'= {name}: 已是金瓜子口径，无需处理')
             continue
         touched += 1
-        flag = '已转换' if result['already_converted'] else '待转换'
+        flag = '部分已转换' if result['already_converted'] else '待转换'
         print(f'{"+" if args.apply else "·"} {name} [{flag}] '
-              f"sc={stats['sc']} guard={stats['guard']} 去重={stats['guard_dropped']} "
-              f"礼物补额={stats['gift_fixed']} 待确认={stats['gift_unclear']}")
+              f"sc={stats['sc']} 上舰={stats['guard']} 去重={stats['guard_dropped']} "
+              f"礼物补额={stats['gift_fixed']} 礼物标注={stats['gift_unit']} "
+              f"待确认={stats['gift_unclear']}")
         if args.apply:
             if not args.no_backup:
                 shutil.copy2(path, path + '.bak')
