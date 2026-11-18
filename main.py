@@ -88,6 +88,8 @@ privilege_max = 0              # 0 = 按消息框高度自动决定堆几条
 privilege_cap = 0.0            # 0 = 不封顶，用消息自带的显示时长
 msg_duration = 0.0             # >0 时所有消息统一停留这么久（DanmakuFactory 的 --msgboxduration）
 msg_source = 'price'           # 消息框时长来源：price=按金额分档 / time=用消息自带时长
+# 抖音匿名探活：轮询时只问「开没开播」，不带用户的 Cookie；开播了再用 Cookie 取流
+douyin_anon_probe = True
 subtitle_show_user = True      # 弹幕前是否显示「用户名:」
 recording_time_list = {}
 script_path = os.path.split(os.path.realpath(sys.argv[0]))[0]
@@ -813,13 +815,40 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
 
             # print(f'\r代理地址:{proxy_address}')
             # print(f'\r全局代理:{global_proxy}')
+            # 抖音匿名探活的状态（每个主播线程各自一份）
+            douyin_probe_cooldown = 0.0    # 探活被风控时暂停多久
+            douyin_verify_at = 0.0         # 下一次强制走完整检测的时间
+            douyin_direct_url = ('v.douyin.com' not in record_url and '/user/' not in record_url)
             while True:
                 try:
                     port_info = []
                     if record_url.find("douyin.com/") > -1:
                         platform = '抖音直播'
                         with semaphore:
-                            if 'v.douyin.com' not in record_url and '/user/' not in record_url:
+                            # 先匿名探活：只问开没开播，不带用户的 Cookie。
+                            # 明确没开播就直接跳过，连拉流地址都不解析；探活被风控挡住
+                            # 或者判定不确定时才退回带 Cookie 的完整检测。
+                            skip_full_check = False
+                            if douyin_anon_probe and douyin_direct_url and time.time() >= douyin_probe_cooldown:
+                                _probe = asyncio.run(spider.get_douyin_live_status(
+                                    url=record_url, proxy_addr=proxy_address))
+                                if _probe.get('unknown'):
+                                    douyin_probe_cooldown = time.time() + 600
+                                    logger.debug(f'{anchor_name} 抖音匿名探活失败（{_probe.get("error", "")}），'
+                                                 f'10 分钟内改走带 Cookie 的完整检测')
+                                elif _probe.get('live') is False:
+                                    if time.time() >= douyin_verify_at:
+                                        douyin_verify_at = time.time() + 1800
+                                        logger.debug(f'{anchor_name} 抖音匿名探活：未开播，'
+                                                     f'按 30 分钟一次做完整复核')
+                                    else:
+                                        skip_full_check = True
+                                else:
+                                    logger.info(f'{anchor_name} 抖音匿名探活到开播，改用 Cookie 取流地址')
+
+                            if skip_full_check:
+                                json_data = None
+                            elif douyin_direct_url:
                                 json_data = asyncio.run(spider.get_douyin_web_stream_data(
                                     url=record_url,
                                     proxy_addr=proxy_address,
@@ -829,7 +858,7 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
                                     url=record_url,
                                     proxy_addr=proxy_address,
                                     cookies=dy_cookie))
-                            if danmaku_enabled:
+                            if json_data and danmaku_enabled:
                                 # 弹幕 WebSocket 要的是 enter 接口返回的真实 room_id，
                                 # 网址里那串短数字（web_rid）直接连上去收不到消息
                                 try:
@@ -841,8 +870,9 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
                                         logger.warning(f'未取到直播间 room_id，本场不抓弹幕: {record_url}')
                                 except Exception:
                                     pass
-                            port_info = asyncio.run(
-                                stream.get_douyin_stream_url(json_data, record_quality, proxy_address))
+                            if json_data:
+                                port_info = asyncio.run(
+                                    stream.get_douyin_stream_url(json_data, record_quality, proxy_address))
 
                     elif record_url.find("https://www.tiktok.com/") > -1:
                         platform = 'TikTok直播'
@@ -2224,6 +2254,8 @@ while True:
         else 'price')
     subtitle_show_user = str(read_config_value(
         config, '录制设置', '弹幕字幕显示用户名(是/否)', '是')).strip() != '否'
+    douyin_anon_probe = str(read_config_value(
+        config, '录制设置', '抖音匿名探活(是/否)', '是')).strip() != '否'
     is_run_script = options.get(read_config_value(config, '录制设置', '是否录制完成后执行自定义脚本', "否"), False)
     custom_script = read_config_value(config, '录制设置', '自定义脚本执行命令', "") if is_run_script else None
     enable_proxy_platform = read_config_value(

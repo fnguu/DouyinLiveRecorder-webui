@@ -65,6 +65,84 @@ async def get_play_url_list(m3u8: str, proxy: OptionalStr = None, header: Option
     return play_url_list
 
 
+# 匿名探活用的公共 ttwid：只拿来问「开没开播」，不带用户自己的登录 Cookie
+DOUYIN_ANON_COOKIE = ('ttwid=1%7C2iDIYVmjzMcpZ20fcaFde0VghXAA3NaNXE_SLR68IyE%7C1761045455'
+                      '%7Cab35197d5cfb21df6cbb2fa7ef1c9262206b062c315b9d04da746d0b37dfbc7d')
+DOUYIN_ANON_UA = ('Mozilla/5.0 (Windows NT 10.0; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) '
+                  'Chrome/116.0.5845.97 Safari/537.36 Core/1.116.567.400 QQBrowser/19.7.6764.400')
+
+
+@trace_error_decorator
+async def get_douyin_live_status(url: str, proxy_addr: OptionalStr = None, timeout: int = 8) -> dict:
+    """匿名探活：不带用户 Cookie，只问这个房间开没开播。
+
+    抖音没有 B 站 room_init 那种纯状态接口，可用的还是 webcast/room/web/enter，
+    区别在于这里带内置公共 ttwid、并且刻意**不解析 stream_url** —— 省掉最费时的
+    那部分，也不会把你的登录 Cookie 每轮轮询都消耗一次。
+
+    返回 {'live': True|False|None, 'unknown': bool, ...}：
+      live=False   → 明确没开播，调用方可以直接跳过，不必再带 Cookie 请求；
+      live=True    → 开播了，调用方再用 Cookie 取一次流地址、开录；
+      unknown=True → 风控/网络没拿到数据，调用方**必须**退回带 Cookie 的完整检测，
+                     绝不能当成没开播，否则会漏录整场。
+    """
+    web_rid = url.split('?')[0].split('live.douyin.com/')[-1].strip('/')
+    if not web_rid or not web_rid.isdigit():
+        return {'live': None, 'unknown': True, 'anchor_name': '', 'web_rid': web_rid,
+                'error': f'不支持的抖音地址: {url}'}
+
+    headers = {
+        'cookie': DOUYIN_ANON_COOKIE,
+        'referer': f'https://live.douyin.com/{web_rid}',
+        'user-agent': DOUYIN_ANON_UA,
+    }
+    params = {
+        "aid": "6383",
+        "app_name": "douyin_web",
+        "live_id": "1",
+        "device_platform": "web",
+        "language": "zh-CN",
+        "browser_language": "zh-CN",
+        "browser_platform": "Win32",
+        "browser_name": "Chrome",
+        "browser_version": "116.0.0.0",
+        "web_rid": web_rid,
+        'msToken': '',
+    }
+    api = f'https://live.douyin.com/webcast/room/web/enter/?{urllib.parse.urlencode(params)}'
+    try:
+        api += "&a_bogus=" + ab_sign(urllib.parse.urlparse(api).query, headers['user-agent'])
+        resp = await async_req(url=api, proxy_addr=proxy_addr, headers=headers, timeout=timeout)
+        payload = json.loads(resp)
+        if payload.get('status_code') not in (0, None):
+            return {'live': None, 'unknown': True, 'web_rid': web_rid,
+                    'error': f"status_code={payload.get('status_code')} {payload.get('message') or ''}".strip()}
+        data = payload.get('data') or {}
+        user = data.get('user') or {}
+        rooms = data.get('data') or []
+        if rooms:
+            room = rooms[0]
+            status = room.get('status')
+            if status is None:
+                return {'live': None, 'unknown': True, 'web_rid': web_rid, 'error': '返回里没有 status 字段'}
+            return {
+                'live': status == 2,
+                'unknown': False,
+                'status': status,
+                'web_rid': web_rid,
+                'room_id': str(room.get('id_str') or ''),
+                'anchor_name': user.get('nickname') or '',
+            }
+        if user.get('nickname'):
+            # 认出了主播但没有直播间对象：没开播（或这号从没开过播）
+            return {'live': False, 'unknown': False, 'status': None, 'web_rid': web_rid,
+                    'room_id': '', 'anchor_name': user.get('nickname') or '', 'reason': 'no_room'}
+        return {'live': None, 'unknown': True, 'web_rid': web_rid, 'error': '既没有房间也没有主播信息'}
+    except Exception as exc:
+        return {'live': None, 'unknown': True, 'web_rid': web_rid,
+                'error': f'{type(exc).__name__}: {exc}'}
+
+
 async def get_douyin_web_stream_data(url: str, proxy_addr: OptionalStr = None, cookies: OptionalStr = None):
     headers = {
         'cookie': 'ttwid=1%7C2iDIYVmjzMcpZ20fcaFde0VghXAA3NaNXE_SLR68IyE%7C1761045455'
