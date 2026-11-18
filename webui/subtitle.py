@@ -55,6 +55,9 @@ def style_from_config() -> dict:
         'duration': max(1.0, num('固定弹幕停留时间(秒)', 5)),
         'max_lines': int(max(0, num('弹幕字幕同屏行数(0=自动)', 0))),
         'mode': 'fixed' if mode == '固定' else 'scroll',
+        'privilege_layout': str(ini.get('礼物弹幕显示方式(左下角/滚动/关闭)', '左下角')).strip() or '左下角',
+        'privilege_max': int(max(1, num('礼物弹幕最多条数', 6))),
+        'privilege_cap': max(0.0, num('礼物弹幕最长停留(秒)', 0)),
     }
 
 

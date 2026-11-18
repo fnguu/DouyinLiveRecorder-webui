@@ -57,10 +57,15 @@ def read_records(xml_path: str) -> list:
         tag = node.tag
         attrs = node.attrib
         if tag == 'd':
-            p = (attrs.get('p') or '').split(',')
+            fields = (attrs.get('p') or '').split(',')
+            # p: offset,mode,size,color,ts,...   mode 4=底部固定 5=顶部固定 其它=滚动
+            try:
+                mode = int(fields[1]) if len(fields) > 1 else 1
+            except (TypeError, ValueError):
+                mode = 1
             records.append({
-                'type': 'chat', 'offset': _num(p[0]) if p else 0.0,
-                'user': attrs.get('user') or '', 'content': node.text or '',
+                'type': 'chat', 'offset': _num(fields[0]) if fields else 0.0,
+                'user': attrs.get('user') or '', 'content': node.text or '', 'mode': mode,
             })
         elif tag == 'gift':
             name = attrs.get('giftname') or '礼物'
@@ -73,6 +78,7 @@ def read_records(xml_path: str) -> list:
             records.append({
                 'type': 'sc', 'offset': _num(attrs.get('ts')), 'user': attrs.get('user') or '',
                 'content': node.text or '', 'diamond': _num(attrs.get('price')),
+                'sc_time': _num(attrs.get('time')),
             })
         elif tag == 'guard':
             name = attrs.get('guardname') or '舰长'
@@ -98,7 +104,8 @@ def style_defaults() -> dict:
     """DanmakuFactory 默认预设。"""
     return dict(duration=FIXED_DURATION, mode='scroll', max_lines=0,
                 font_size=SUBTITLE_FONT_SIZE, scroll_duration=SCROLL_DURATION,
-                alpha=SUBTITLE_ALPHA, outline=SUBTITLE_OUTLINE, shadow=SUBTITLE_SHADOW)
+                alpha=SUBTITLE_ALPHA, outline=SUBTITLE_OUTLINE, shadow=SUBTITLE_SHADOW,
+                privilege_layout='corner', privilege_max=6, privilege_cap=0.0)
 
 
 def convert_file(xml_path: str, overwrite: bool = False, resolution=None, **render_kwargs) -> dict:

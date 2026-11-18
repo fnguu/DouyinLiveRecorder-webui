@@ -289,10 +289,19 @@ def gift_line(record: dict) -> str:
 
 
 def sc_line(record: dict) -> str:
-    """一条醒目留言 -> 一行 <sc>。"""
+    """一条醒目留言 -> 一行 <sc>。
+
+    time 是 B 站给的这条 SC 的显示时长（秒），转 ASS 时直接用它，
+    没有才按价格档位估 —— DanmakuFactory 也是这么处理的。
+    """
+    try:
+        sc_time = int(float(record.get('sc_time') or 0))
+    except (TypeError, ValueError):
+        sc_time = 0
+    time_attr = f' time="{sc_time}"' if sc_time > 0 else ''
     return (f'  <sc ts="{_offset_text(record)}" user="{esc(record.get("user"))}"'
             f' uid="{esc(_uid_text(record))}"'
-            f' price="{_price_text(record)}"{_unit_attr(record)}>'
+            f' price="{_price_text(record)}"{_unit_attr(record)}{time_attr}>'
             f'{esc(record.get("content"))}</sc>\n')
 
 

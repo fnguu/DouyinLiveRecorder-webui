@@ -83,6 +83,9 @@ subtitle_scroll_duration = 12.0
 subtitle_fixed_duration = 5.0
 subtitle_max_lines = 0         # 0 = 按画面高度自动铺满
 subtitle_mode = 'scroll'
+privilege_layout = '左下角'     # 礼物/SC/上舰：左下角 / 滚动 / 关闭
+privilege_max = 6
+privilege_cap = 0.0            # 0 = 按价格档位，不额外封顶
 recording_time_list = {}
 script_path = os.path.split(os.path.realpath(sys.argv[0]))[0]
 config_file = f'{script_path}/config/config.ini'
@@ -155,6 +158,9 @@ def subtitle_style_kwargs() -> dict:
         'subtitle_max_lines': subtitle_max_lines,
         'subtitle_duration': subtitle_fixed_duration,
         'subtitle_mode': subtitle_mode,
+        'privilege_layout': privilege_layout,
+        'privilege_max': privilege_max,
+        'privilege_cap': privilege_cap,
     }
 
 
@@ -2193,6 +2199,16 @@ while True:
         subtitle_max_lines = 0
     subtitle_mode = '固定' if str(read_config_value(
         config, '录制设置', '弹幕字幕显示方式(滚动/固定)', '滚动')).strip().startswith('固定') else '滚动'
+    privilege_layout = str(read_config_value(
+        config, '录制设置', '礼物弹幕显示方式(左下角/滚动/关闭)', '左下角')).strip() or '左下角'
+    try:
+        privilege_max = max(1, int(read_config_value(config, '录制设置', '礼物弹幕最多条数', 6)))
+    except (TypeError, ValueError):
+        privilege_max = 6
+    try:
+        privilege_cap = max(0.0, float(read_config_value(config, '录制设置', '礼物弹幕最长停留(秒)', 0)))
+    except (TypeError, ValueError):
+        privilege_cap = 0.0
     is_run_script = options.get(read_config_value(config, '录制设置', '是否录制完成后执行自定义脚本', "否"), False)
     custom_script = read_config_value(config, '录制设置', '自定义脚本执行命令', "") if is_run_script else None
     enable_proxy_platform = read_config_value(

@@ -288,7 +288,9 @@ class BiliDanmakuRecorder:
                  subtitle_types=None, gift_min_diamond: float = 0.0,
                  subtitle_font_size: int = 42, subtitle_alpha: int = 75,
                  subtitle_outline: int = 0, subtitle_shadow: int = 1,
-                 subtitle_scroll_duration: float = 12.0, uid: str = '0'):
+                 subtitle_scroll_duration: float = 12.0,
+                 privilege_layout: str = 'corner', privilege_max: int = 6,
+                 privilege_cap: float = 0.0, uid: str = '0'):
         self.room_id = str(room_id)
         self.anchor_name = anchor_name or self.room_id
         self.cookie = cookie or ''
@@ -306,6 +308,13 @@ class BiliDanmakuRecorder:
         self.subtitle_outline = max(0, int(subtitle_outline))
         self.subtitle_shadow = max(0, int(subtitle_shadow))
         self.subtitle_scroll_duration = max(1.0, float(subtitle_scroll_duration or 12.0))
+        # 礼物/SC/上舰：corner=堆在左下角（默认） scroll=跟着飘 off=不显示
+        self.privilege_layout = str(privilege_layout or 'corner').strip().lower()
+        self.privilege_max = max(1, int(privilege_max or 6))
+        try:
+            self.privilege_cap = max(0.0, float(privilege_cap or 0))
+        except (TypeError, ValueError):
+            self.privilege_cap = 0.0
         self.uid = str(uid or '0')
 
         self.base_path = _clean_base(save_file_path)
@@ -665,9 +674,14 @@ class BiliDanmakuRecorder:
             price_yuan = float(data.get('price') or 0)
         except (TypeError, ValueError):
             price_yuan = 0.0
+        # time 是 B 站下发的这条 SC 该显示多久（秒），转 ASS 时优先用它
+        try:
+            sc_time = int(float(data.get('time') or 0))
+        except (TypeError, ValueError):
+            sc_time = 0
         return self._pack('sc', data.get('start_time') or data.get('ts'), uid, uname,
                           data.get('message') or '', diamond=round(price_yuan * 1000),
-                          price_unit=PRICE_UNIT)
+                          price_unit=PRICE_UNIT, sc_time=sc_time)
 
     # 上舰等级：1=总督 2=提督 3=舰长，金额单位是金瓜子（1000 ≈ 1 元）
     GUARD_NAMES = {1: '总督', 2: '提督', 3: '舰长'}
@@ -794,6 +808,8 @@ class BiliDanmakuRecorder:
             types=self.subtitle_types, gift_min_diamond=self.gift_min_diamond,
             scroll_duration=self.subtitle_scroll_duration,
             alpha=self.subtitle_alpha, outline=self.subtitle_outline, shadow=self.subtitle_shadow,
+            privilege_layout=self.privilege_layout, privilege_max=self.privilege_max,
+            privilege_cap=self.privilege_cap,
         )
         logger.debug(f'B站弹幕 ASS 已生成: {self.ass_path}（写入 {written} 条'
                      + (f'，丢弃 {dropped} 条' if dropped else '') + '）')
