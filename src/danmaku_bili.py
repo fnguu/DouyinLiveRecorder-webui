@@ -68,6 +68,10 @@ WBI_MIXIN = [
 # 进字幕的消息类型。进场/点赞/关注量太大，默认只进 XML 之外的统计，不刷屏。
 SUBTITLE_TYPES = ('chat', 'gift', 'sc', 'guard', 'emoji')
 
+# 金额统一单位：B 站的 gift 本来就是金瓜子，SC / 上舰原始是「元」，
+# 全部按 1 元 = 1000 金瓜子折算后落盘，免得同一列里混着三种量纲。
+PRICE_UNIT = '金瓜子'
+
 _sessions: dict = {}
 _sessions_lock = threading.Lock()
 
@@ -311,6 +315,7 @@ class BiliDanmakuRecorder:
         self._xml = None
         self._last_flush = 0.0
         self._base_time: Optional[datetime] = None
+        self._guard_seen: dict = {}
         self.count = 0
 
     # ------------------------------------------------------------------ 对外
@@ -325,7 +330,7 @@ class BiliDanmakuRecorder:
         os.makedirs(os.path.dirname(self.base_path) or '.', exist_ok=True)
         if 'xml' in self.formats:
             self._xml = XmlWriter(self.xml_path, self.room_id, anchor_name=self.anchor_name,
-                                  sections=('d', 'gift', 'sc', 'guard'))
+                                  sections=('d', 'gift', 'sc', 'guard'), price_unit=PRICE_UNIT)
         self._stop_event.clear()
         self._thread = threading.Thread(target=self._run, name=f'bili_danmaku_{self.room_id}', daemon=True)
         self._thread.start()
@@ -573,12 +578,24 @@ class BiliDanmakuRecorder:
         num = data.get('num') or 1
         uname = data.get('uname') or ''
         uid = data.get('uid') or ''
+        # price 是金瓜子单价、total_coin 是总金瓜子。以「单价 × 数量」为准：
+        # 实测有过 total_coin 只给单价的情况，按总额记会少算。
         try:
-            diamond = float(data.get('total_coin') or 0)
+            unit_price = float(data.get('price') or 0)
         except (TypeError, ValueError):
-            diamond = 0.0
+            unit_price = 0.0
+        try:
+            total_coin = float(data.get('total_coin') or 0)
+        except (TypeError, ValueError):
+            total_coin = 0.0
+        try:
+            count = int(num or 1)
+        except (TypeError, ValueError):
+            count = 1
+        diamond = unit_price * count if unit_price else total_coin
         return self._pack('gift', data.get('timestamp'), uid, uname, f'{name} x{num}',
-                          diamond=diamond, gift_name=name, gift_count=num)
+                          diamond=diamond, gift_name=name, gift_count=num,
+                          price_unit=PRICE_UNIT)
 
     def _gift_v2(self, data: dict) -> list:
         """SEND_GIFT_V2：访客（未登录/新版客户端）现在收的是这条，data.pb 是 protobuf。
@@ -622,10 +639,13 @@ class BiliDanmakuRecorder:
                 continue
             seen.add(key)
             price = _pb_int(f, 5)
-            total = _pb_int(f, 6) or price * num
+            # 第 6 字段名义上是「总金瓜子」，但实测 10 连人气票它仍给 100（单价），
+            # 所以以「单价 × 数量」为准，字段 6 只在单价缺失时兜底。
+            total = price * num if price else _pb_int(f, 6)
             recs.append(self._pack(
                 'gift', ts or None, uid or '', uname,
                 f'{name} x{num}', diamond=total, gift_name=name, gift_count=num,
+                price_unit=PRICE_UNIT,
             ))
         return recs
 
@@ -633,13 +653,20 @@ class BiliDanmakuRecorder:
         info = data.get('user_info') or {}
         uname = info.get('uname') or ''
         uid = data.get('uid') or ''
-        price = data.get('price') or 0
-        # price 单独存 diamond，ASS 里用【醒目留言】前缀展示，XML 的 sc 标签带 price 属性
+        # B 站 SC 的 price 单位是「元」（最低档 2 元），统一折算成金瓜子落盘
+        try:
+            price_yuan = float(data.get('price') or 0)
+        except (TypeError, ValueError):
+            price_yuan = 0.0
         return self._pack('sc', data.get('start_time') or data.get('ts'), uid, uname,
-                          data.get('message') or '', diamond=price)
+                          data.get('message') or '', diamond=round(price_yuan * 1000),
+                          price_unit=PRICE_UNIT)
 
     # 上舰等级：1=总督 2=提督 3=舰长，金额单位是金瓜子（1000 ≈ 1 元）
     GUARD_NAMES = {1: '总督', 2: '提督', 3: '舰长'}
+    # 同一个人、同一档舰长，B 站会连发 GUARD_BUY + USER_TOAST_MSG（有时还有 _V2），
+    # 内容几乎一样，只有价格可能一条是原价、一条是优惠价。窗口内只记一条。
+    GUARD_DEDUPE_SECONDS = 8.0
 
     def _guard(self, data: dict) -> Optional[dict]:
         """上舰（开通舰长/提督/总督）。USER_TOAST_MSG 字段最全，GUARD_BUY 兜底。"""
@@ -657,10 +684,20 @@ class BiliDanmakuRecorder:
             price = price / 1000.0
         if not uname:
             return None
+
+        key = (str(uid or ''), int(level or 0) or name)
+        now = time.time()
+        seen = self._guard_seen.get(key)
+        if seen and now - seen[0] <= self.GUARD_DEDUPE_SECONDS:
+            logger.debug(f'上舰广播重复，已忽略: {uname} {name} {price:g} 元'
+                         f'（首次记录 {seen[1]:g} 元）')
+            return None
+        self._guard_seen[key] = (now, price)
+
         return self._pack('guard', data.get('start_time') or data.get('ts'), uid, uname,
                           f'开通 {name}' + (f' x{num}' if num and int(num) > 1 else ''),
-                          diamond=price, guard_name=name, gift_name=name,
-                          gift_count=num)
+                          diamond=round(price * 1000), guard_name=name, gift_name=name,
+                          gift_count=num, price_unit=PRICE_UNIT)
 
     def _interact(self, data: dict) -> Optional[dict]:
         # INTERACT_WORD_V2 的字段是 protobuf base64，取不到明文时退回 V1 结构

@@ -100,6 +100,12 @@ def _price_text(record: dict) -> str:
     return f'{price:g}'
 
 
+def _unit_attr(record: dict) -> str:
+    """金额单位显式写进属性：B 站是金瓜子，抖音是抖币，省略表示沿用旧文件的约定。"""
+    unit = str(record.get('price_unit') or '').strip()
+    return f' unit="{esc(unit)}"' if unit else ''
+
+
 # ---------------------------------------------------------------------- 内嵌样式
 # 照录播姬（BililiveRecorder）的思路：把 XSLT 样式表塞在 XML 里，
 # 浏览器打开时把 <d>/<gift>/<sc>/<guard> 渲染成表格。注意整个字符串必须是
@@ -110,8 +116,11 @@ def _price_text(record: dict) -> str:
 _FULL_SECTIONS = ('d', 'gift', 'sc', 'guard')
 
 
-def _stylesheet(sections=_FULL_SECTIONS) -> str:
+def _stylesheet(sections=_FULL_SECTIONS, price_unit: str = '') -> str:
     s = set(sections or _FULL_SECTIONS)
+    suffix = f'（{price_unit}）' if price_unit else ''
+    money_head = f'金额{suffix}'
+    price_head = f'价格{suffix}'
     rows = [f'<tr><td><a href="#d">弹幕</a></td><td>共<z:value-of select="count(/i/d)"/>条记录</td></tr>']
     if 'gift' in s:
         rows.append('<tr><td><a href="#gift">礼物</a></td><td>共<z:value-of select="count(/i/gift)"/>条记录</td></tr>')
@@ -126,7 +135,8 @@ def _stylesheet(sections=_FULL_SECTIONS) -> str:
         extra_tables += (
             '<h2 id="gift">礼物</h2>'
             '<div id="gf"><table>'
-            '<tr><th>用户名</th><th>出现时间</th><th>用户ID</th><th>礼物</th><th>数量</th><th>金额</th></tr>'
+            '<tr><th>用户名</th><th>出现时间</th><th>用户ID</th><th>礼物</th><th>数量</th>'
+            f'<th>{money_head}</th></tr>'
             '<z:for-each select="/i/gift"><tr>'
             '<td><z:value-of select="@user"/></td><td><z:value-of select="@ts"/></td>'
             '<td><z:value-of select="@uid"/></td><td><z:value-of select="@giftname"/></td>'
@@ -138,7 +148,8 @@ def _stylesheet(sections=_FULL_SECTIONS) -> str:
         extra_tables += (
             '<h2 id="sc">SC</h2>'
             '<div id="sct"><table>'
-            '<tr><th>用户名</th><th>出现时间</th><th>用户ID</th><th>内容</th><th>价格</th></tr>'
+            '<tr><th>用户名</th><th>出现时间</th><th>用户ID</th><th>内容</th>'
+            f'<th>{price_head}</th></tr>'
             '<z:for-each select="/i/sc"><tr>'
             '<td><z:value-of select="@user"/></td><td><z:value-of select="@ts"/></td>'
             '<td><z:value-of select="@uid"/></td><td><z:value-of select="."/></td>'
@@ -150,7 +161,8 @@ def _stylesheet(sections=_FULL_SECTIONS) -> str:
         extra_tables += (
             '<h2 id="guard">上舰</h2>'
             '<div id="gd"><table>'
-            '<tr><th>用户名</th><th>出现时间</th><th>用户ID</th><th>舰团</th><th>金额</th></tr>'
+            '<tr><th>用户名</th><th>出现时间</th><th>用户ID</th><th>舰团</th>'
+            f'<th>{money_head}</th></tr>'
             '<z:for-each select="/i/guard"><tr>'
             '<td><z:value-of select="@user"/></td><td><z:value-of select="@ts"/></td>'
             '<td><z:value-of select="@uid"/></td><td><z:value-of select="@guardname"/></td>'
@@ -201,7 +213,8 @@ def _stylesheet(sections=_FULL_SECTIONS) -> str:
     )
 
 
-def xml_header(room_id, anchor_name='', start_time='', version=None, sections=None) -> str:
+def xml_header(room_id, anchor_name='', start_time='', version=None, sections=None,
+               price_unit: str = '') -> str:
     v = str(version or APP_VERSION)
     s = tuple(sections) if sections else _FULL_SECTIONS
     tags = 'd 为弹幕'
@@ -211,6 +224,9 @@ def xml_header(room_id, anchor_name='', start_time='', version=None, sections=No
         tags += ', sc 为醒目留言'
     if 'guard' in s:
         tags += ', guard 为上舰'
+    if price_unit:
+        tags += f'；gift/sc/guard 的 price 统一为{price_unit}'
+    unit_attr = f' price_unit="{esc(price_unit)}"' if price_unit else ''
     return (
         '<?xml version="1.0" encoding="UTF-8"?>\n'
         '<?xml-stylesheet type="text/xsl" href="#s"?>\n'
@@ -227,8 +243,8 @@ def xml_header(room_id, anchor_name='', start_time='', version=None, sections=No
         '  <real_name>0</real_name>\n'
         '  <source>k-v</source>\n'
         f'  <RecordInfo app_version="{esc(v)}" roomid="{esc(room_id)}"'
-        f' name="{esc(anchor_name)}" start_time="{esc(start_time)}" />\n'
-        f'  <XmlStyle>{_stylesheet(s)}</XmlStyle>\n'
+        f' name="{esc(anchor_name)}" start_time="{esc(start_time)}"{unit_attr} />\n'
+        f'  <XmlStyle>{_stylesheet(s, price_unit)}</XmlStyle>\n'
     )
 
 
@@ -262,14 +278,15 @@ def gift_line(record: dict) -> str:
             f' uid="{esc(_uid_text(record))}"'
             f' giftname="{esc(record.get("gift_name") or record.get("content") or "礼物")}"'
             f' giftcount="{esc(record.get("gift_count") or 1)}"'
-            f' price="{_price_text(record)}"/>\n')
+            f' price="{_price_text(record)}"{_unit_attr(record)}/>\n')
 
 
 def sc_line(record: dict) -> str:
     """一条醒目留言 -> 一行 <sc>。"""
     return (f'  <sc ts="{_offset_text(record)}" user="{esc(record.get("user"))}"'
             f' uid="{esc(_uid_text(record))}"'
-            f' price="{_price_text(record)}">{esc(record.get("content"))}</sc>\n')
+            f' price="{_price_text(record)}"{_unit_attr(record)}>'
+            f'{esc(record.get("content"))}</sc>\n')
 
 
 def guard_line(record: dict) -> str:
@@ -277,17 +294,19 @@ def guard_line(record: dict) -> str:
     return (f'  <guard ts="{_offset_text(record)}" user="{esc(record.get("user"))}"'
             f' uid="{esc(_uid_text(record))}"'
             f' guardname="{esc(record.get("guard_name") or record.get("gift_name") or "舰长")}"'
-            f' price="{_price_text(record)}"/>\n')
+            f' price="{_price_text(record)}"{_unit_attr(record)}/>\n')
 
 
 class XmlWriter:
     """增量写弹幕 XML。close() 之前文件始终是"未收尾"状态。
 
     sections 控制头部样式里生成哪些板块（抖音没有 SC/上舰，只传 d+gift）。
+    price_unit 标明 gift/sc/guard 的 price 单位（B 站传「金瓜子」），会写进
+    表头和 RecordInfo，省得以后又有人对着 100 / 2 / 198 猜单位。
     """
 
     def __init__(self, path: str, room_id='0', anchor_name='', start_time=None,
-                 sync_existing: bool = False, sections=None):
+                 sync_existing: bool = False, sections=None, price_unit: str = ''):
         self.path = path
         self.room_id = room_id
         self.count = 0
@@ -297,7 +316,8 @@ class XmlWriter:
         if mode == 'w':
             if not start_time:
                 start_time = datetime.now().astimezone().isoformat(timespec='seconds')
-            self._fh.write(xml_header(room_id, anchor_name, start_time, sections=sections))
+            self._fh.write(xml_header(room_id, anchor_name, start_time,
+                                      sections=sections, price_unit=price_unit))
             self._fh.flush()
 
     def append(self, records: Iterable[dict], fsync: bool = False) -> int:

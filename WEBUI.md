@@ -289,6 +289,8 @@ XML 是边抓边写的，容器被强杀也只缺一个收尾标签，内容不�
 - 没有 `sid_guard` 的抖音 Cookie 会显示「无法判定有效期」，此时不会推送，但卡片上仍能看到关键字段是否齐全。
 - 结论保存在 `config/cookie_status.json`，重启容器不丢。
 
+**弹幕金额口径**：`gift` / `sc` / `guard` 的 `price` 统一为**金瓜子**（1 元 = 1000 金瓜子），元素上带 `unit="金瓜子"`、`RecordInfo` 带 `price_unit`，浏览器预览的表头也会标出单位。SC 和上舰在 B 站接口里原本是「元」，落盘时已 ×1000；连击礼物按「单价 × 数量」计算；一次上舰的 `GUARD_BUY` / `USER_TOAST_MSG` 只记一条。老的弹幕文件用 `tools/normalize_danmaku_xml.py` 一次性归一化（见 README）。
+
 **日志**：三个视图分别对应 `logs/recorder.log`（容器标准输出）、`logs/PlayURL.log`（开播/关播事件）、`logs/streamget.log`（调试）。
 
 **版本号**：WebUI 采用「基版本 + 修订号」，格式 `1.0.0.N`，N 是影响 WebUI 的改动次数（初版记为 1）。
