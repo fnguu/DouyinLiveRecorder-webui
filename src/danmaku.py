@@ -323,9 +323,10 @@ def ass_font_name() -> str:
     Docker/Linux 镜像里没有微软雅黑，直接沿用 Windows 的名字会导致字幕整体不显示；
     这里按平台挑一个确定装了的字体，并在镜像里额外配了 fontconfig 别名兜底。
     """
-    if sys.platform.startswith('win'):
-        return 'Microsoft YaHei'
-    return 'WenQuanYi Micro Hei'
+    # 统一写 Microsoft YaHei：这就是 DanmakuFactory 的默认字体，Windows 播放器
+    # 一定有；Linux 播放器会由 fontconfig 替换成系统里的中文字体。之前按平台写
+    # WenQuanYi，玩家那边字体一换，字号观感就和 DMF 的成片对不上了。
+    return 'Microsoft YaHei'
 
 
 # ASS 字幕的默认排版，对齐 DanmakuFactory 的默认预设：
@@ -382,8 +383,12 @@ def _ass_colour(rgb: str, alpha: int = SUBTITLE_ALPHA) -> str:
 
 
 def _escape_ass_text(text: str) -> str:
-    """弹幕内容可能含有 ASS 的保留字符，原样写进去会把整行结构搞坏。"""
-    return (text or '').replace('\\', '\\\\').replace('{', '(').replace('}', ')').replace('\n', ' ')
+    """弹幕内容可能含有 ASS 的保留字符，原样写进去会把整行结构搞坏。
+
+    换行按 DanmakuFactory 的做法换成 ASS 的硬空格 `\\h`：直接留 \\n 会断成两行，
+    换成普通空格又会把连续换行挤成一个间隔。
+    """
+    return (text or '').replace('\\', '\\\\').replace('{', '(').replace('}', ')').replace('\n', '\\h')
 
 
 def _ass_text_width(text: str, font_size: int = SUBTITLE_FONT_SIZE) -> float:
@@ -471,6 +476,95 @@ def _take_slot(tracks: list, start: float, limit: int):
     return None, False
 
 
+USER_NAME_COLOUR = 'BCACF7'      # DanmakuFactory 固定用这个粉色画用户名（ASS 是 BGR）
+MSG_FONT_RATIO = 38.0 / 42.0     # 消息框字号 = 正文字号 × 38/42（DMF 默认 42 / 38）
+MSG_CARD_H = 87                  # 上舰卡片的圆角矩形高度（字号 38 时）
+MSG_CARD_W = 500                 # 卡片宽度（DMF --msgboxsize 默认 500x1080）
+MSG_BOTTOM_PAD = 6
+
+
+def _bgr(colour) -> str:
+    """B 站弹幕颜色是 0xRRGGBB，ASS 要的是 BBGGRR。"""
+    try:
+        value = int(colour)
+    except (TypeError, ValueError):
+        return 'FFFFFF'
+    value = max(0, min(0xFFFFFF, value))
+    return f'{value & 0xFF:02X}{(value >> 8) & 0xFF:02X}{(value >> 16) & 0xFF:02X}'
+
+
+def _msg_body(record: dict) -> str:
+    """消息框里正文那一行：礼物「名称 xN」、上舰「Welcome new 舰长!」、SC 为留言内容。
+
+    上舰的文案照 DanmakuFactory 的原样，它就是这么写的。
+    """
+    rtype = str(record.get('type') or '').lower()
+    if rtype == 'guard':
+        name = record.get('guard_name') or record.get('gift_name') or '舰长'
+        return f'Welcome new {name}!'
+    if rtype == 'gift':
+        name = record.get('gift_name') or record.get('content') or '礼物'
+        try:
+            count = int(record.get('gift_count') or 1)
+        except (TypeError, ValueError):
+            count = 1
+        return f'{name} x{count}'
+    return record.get('content') or ''
+
+
+def _ass_line_text(record: dict, show_user: bool = True, hard_space: bool = False,
+                   message: bool = False) -> str:
+    """一行字幕的 ASS 文本。
+
+    照 DanmakuFactory 的着色方式：用户名固定粉色（消息框里加粗），正文用弹幕自己的
+    颜色（B 站 XML 的 p 第 4 项）。show_user=False 时只输出正文，但仍然带颜色标签，
+    否则会继承 Style 里的颜色，和 DMF 的 --showusernames false 输出不一致。
+    """
+    if message:
+        body = _escape_ass_text(_msg_body(record))
+    else:
+        body = _escape_ass_text(record.get('content') or '')
+    colour = _bgr(record.get('color'))
+
+    if not show_user:
+        bold = '\\b0' if message else ''
+        return f'{{\\c&HFFFFFF{bold}}}{body}'
+
+    user = _escape_ass_text(record.get('user') or '')
+    if message:
+        return (f'{{\\c&H{USER_NAME_COLOUR}\\b1}}{user}: '
+                f'{{\\c&HFFFFFF\\b0}}{body}')
+    sep = '\\h' if hard_space else ''
+    return f'{{\\c&H{USER_NAME_COLOUR}}}{user}:{sep}{{\\c&H{colour}}}{body}'
+
+
+
+def _message_events(start: float, seconds: float, blocks: list, left: int, height: int,
+                    slide: float = 0.25) -> list:
+    """消息块 -> 进场 / 停留 / 退场三段，照 DanmakuFactory 的 250ms 滑动 + 圆角裁剪。
+
+    DMF 的文案不是在原地凭空出现：从画面左侧滑进来 0.25 秒、停住、再滑出去 0.25 秒，
+    并用 \\clip 把超出消息框的部分裁掉，所以左边会有一段"推入"的观感。
+    """
+    out = []
+    hold_in = start + slide
+    hold_out = start + seconds - slide
+    if hold_out <= hold_in:
+        hold_in, hold_out = start, start + seconds
+    clip = (f'\\clip(m {left} 19 b {left} 9 {left + 9} 0 {left + 19} 0 '
+            f'l {left + 481} 0 b {left + 491} 0 {left + 500} 9 {left + 500} 19 '
+            f'l {left + 500} {height} l {left} {height})')
+    off = 20 - MSG_CARD_W          # 完全滑出画面左侧的位置（DMF 用 -480）
+    for layer, x, y, text in blocks:
+        out.append(f'Dialogue: {layer},{_fmt_ass_time(start)},{_fmt_ass_time(hold_in)},Gift,msg,0,0,0,,'
+                   f'{{\\an7\\move({off},{y},{x},{y}){clip}}}{text}')
+        out.append(f'Dialogue: {layer},{_fmt_ass_time(hold_in)},{_fmt_ass_time(hold_out)},Gift,msg,0,0,0,,'
+                   f'{{\\an7\\pos({x},{y})}}{text}')
+        out.append(f'Dialogue: {layer},{_fmt_ass_time(hold_out)},{_fmt_ass_time(start + seconds)},Gift,msg,0,0,0,,'
+                   f'{{\\an7\\move({x},{y},{off},{y}){clip}}}{text}')
+    return out
+
+
 def render_ass(records: list[dict], ass_path: str, max_lines: int = 4, duration: float = FIXED_DURATION,
                mode: str = 'scroll', playres: tuple[int, int] = (1920, 1080),
                font_size: int = SUBTITLE_FONT_SIZE, types: tuple | list | None = None,
@@ -482,22 +576,17 @@ def render_ass(records: list[dict], ass_path: str, max_lines: int = 4, duration:
                show_user: bool = True) -> tuple[int, int]:
     """把弹幕渲染成 ASS 字幕文件，返回 (写入条数, 丢弃条数)。
 
-    弹幕位置与时长完全照 DanmakuFactory 的定义（src/XmlFile.c 的 type 映射 +
-    src/AssFile/AssFile.c 的写入逻辑）：
+    排版与配色都按 DanmakuFactory 的实际输出对齐（src/AssFile/AssFile.c）：
 
-      1/2/3 滚动（R2L）：从右向左飘，一趟 scroll_duration 秒
-      6     逆向滚动（L2R）：从左向右飘，一趟 scroll_duration 秒
-      5     顶部固定（TOP）：停在画面上方，停留 duration（fixTime）秒
-      4     底部固定（BOTTOM）：停在画面下方，停留 duration 秒
-    `mode='fixed'` 是本项目的额外开关，会把普通弹幕一律收进顶部固定。
+      1/2/3 滚动（R2L）：一行一行从 y=0 开始，行距等于字号，一趟 scroll_duration 秒
+      6     逆向滚动（L2R）：反过来飘，同样 12 秒
+      5     顶部固定（TOP）：停在顶部，居中，停留 duration（fixTime）秒
+      4     底部固定（BTM）：从画面底部往上按字号排列，停留 duration 秒
+      礼物/SC/上舰：消息框，左下角从下往上堆，上舰还画一层半透明圆角卡片
 
-    礼物 / SC / 上舰（特权消息）默认走 DanmakuFactory 的**消息框**：
-    在左下角从下往上堆叠，停留时长见 message_seconds（默认按金额分档：
-    2000 电池以下 2 秒~2 分钟、2000~20000 电池 2~5 分钟、20000 电池以上 6 分钟；
-    msg_source='time' 时优先用消息自带的 `time`）；msg_duration > 0 时全部
-    统一成那个时长，对应 DanmakuFactory 的 `--msgboxduration`。
-    privilege_layout='scroll' 让它们跟着飘，'off' 直接不显示。
-    show_user=False 时只显示弹幕内容，不带「用户名:」前缀。
+    文字配色：用户名 `&HBCACF7` 粉色，正文用弹幕自身颜色（白弹幕就是白色）；
+    消息框里用户名加粗、正文白色。`mode='fixed'` 是本项目额外开关，把普通弹幕
+    一律收进顶部固定。msg_duration > 0 时消息统一停留该秒数（--msgboxduration）。
 
     playres 必须与最终视频的分辨率一致：libass 按 PlayRes 与实际画面的比例缩放，
     宽高比对不上时字幕会被拉扁或拉长。调用方应先用 probe_playres() 取实际分辨率。
@@ -505,13 +594,13 @@ def render_ass(records: list[dict], ass_path: str, max_lines: int = 4, duration:
     duration = float(duration or FIXED_DURATION)
     scroll_duration = float(scroll_duration or SCROLL_DURATION)
     width, height = int(playres[0]), int(playres[1])
-    line_height = int(font_size * _LINE_HEIGHT_RATIO)
-    top_margin = max(12, int(height * 0.03))
-    bottom_margin = max(12, int(height * 0.04))
-    left_margin = max(12, int(width * 0.01))
+    font_size = max(12, int(font_size or SUBTITLE_FONT_SIZE))
+    line_height = font_size                       # DMF 的行距就是字号本身
+    msg_font = max(12, int(round(font_size * MSG_FONT_RATIO)))
+    left_margin = max(6, int(round(width * 20.0 / 1920.0)))
     # 0 = 自动：按画面高度能放几行就放几行（对齐 DanmakuFactory 的「显示区域 1.0、密度不限」）
     limit = int(max_lines or 0)
-    max_lines = limit if limit > 0 else max(1, int((height - top_margin) * 0.97 // line_height))
+    max_lines = limit if limit > 0 else max(1, height // line_height)
     scroll = str(mode).strip().lower() not in ('fixed', '固定', '0', 'false', 'no')
     privilege_layout = str(privilege_layout or 'corner').strip().lower()
     if privilege_layout in ('关闭', 'off', 'none', '0', 'false', 'no'):
@@ -520,8 +609,6 @@ def render_ass(records: list[dict], ass_path: str, max_lines: int = 4, duration:
         privilege_layout = 'scroll'
     else:
         privilege_layout = 'corner'
-    # 0 = 自动：按消息框能放下的行数来（对应 DanmakuFactory 的「消息框 500x1080、密度不限」）
-    priv_limit = int(privilege_max or 0) or max(1, (height - bottom_margin) // line_height)
     try:
         msg_duration = max(0.0, float(msg_duration or 0))
     except (TypeError, ValueError):
@@ -531,25 +618,29 @@ def render_ass(records: list[dict], ass_path: str, max_lines: int = 4, duration:
     header = (
         '[Script Info]\n'
         'ScriptType: v4.00+\n'
+        'Collisions: Normal\n'
         f'PlayResX: {width}\n'
         f'PlayResY: {height}\n'
+        'Timer: 100.0000\n'
         'WrapStyle: 2\n'
+        'ScaledBorderAndShadow: yes\n'
         '\n'
         '[V4+ Styles]\n'
-        'Format: Name, Fontname, Fontsize, PrimaryColour, OutlineColour, BackColour, Bold, Italic, '
-        'BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n'
-        # 常规弹幕：白字，描边/阴影/透明度按 DanmakuFactory 默认预设
-        f'Style: Danmaku,{font},{font_size},{_ass_colour("FFFFFF", alpha)},&H00000000,&H80000000,'
-        f'0,0,1,{int(outline)},{int(shadow)},7,0,0,0,1\n'
-        # 固定弹幕（顶部/底部）：对齐方式由行内 \an 覆盖
-        f'Style: Fixed,{font},{font_size},{_ass_colour("FFFFFF", alpha)},&H00000000,&H80000000,'
-        f'0,0,1,{int(outline)},{int(shadow)},2,0,0,0,1\n'
-        # 礼物/SC/上舰：金色加粗，落在左下角
-        f'Style: Gift,{font},{font_size},{_ass_colour("00D7FF", alpha)},&H00101010,&H80300000,'
-        f'-1,0,1,{int(outline)},{int(shadow)},1,0,0,0,1\n'
+        'Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, '
+        'Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, '
+        'Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n'
+        # 普通弹幕：白字，颜色逐行用 \c 覆盖
+        f'Style: Danmaku,{font},{font_size},{_ass_colour("FFFFFF", alpha)},&H00FFFFFF,&H00000000,'
+        f'&H1E6A5149,0,0,0,0,100.00,100.00,0.00,0.00,1,{int(outline)},{int(shadow)},8,0,0,0,1\n'
+        # 固定弹幕（顶部/底部）
+        f'Style: Fixed,{font},{font_size},{_ass_colour("FFFFFF", alpha)},&H00FFFFFF,&H00000000,'
+        f'&H1E6A5149,0,0,0,0,100.00,100.00,0.00,0.00,1,{int(outline)},{int(shadow)},8,0,0,0,1\n'
+        # 消息框：字号比正文小一号，左上对齐
+        f'Style: Gift,{font},{msg_font},{_ass_colour("FFFFFF", alpha)},&H00FFFFFF,&H00000000,'
+        f'&H1E6A5149,0,0,0,0,100.00,100.00,0.00,0.00,1,{int(outline)},{int(shadow)},7,0,0,0,1\n'
         # 表情（抖音小红心/微笑这类动态表情的名字）：浅黄
-        f'Style: Emoji,{font},{font_size},{_ass_colour("A0F0FF", alpha)},&H00101010,&H80000000,'
-        f'0,0,1,{int(outline)},{int(shadow)},7,0,0,0,1\n'
+        f'Style: Emoji,{font},{font_size},{_ass_colour("A0F0FF", alpha)},&H00FFFFFF,&H00000000,'
+        f'&H1E6A5149,0,0,0,0,100.00,100.00,0.00,0.00,1,{int(outline)},{int(shadow)},8,0,0,0,1\n'
         '\n'
         '[Events]\n'
         'Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n'
@@ -559,7 +650,8 @@ def render_ass(records: list[dict], ass_path: str, max_lines: int = 4, duration:
     scroll_tracks: list[float] = []    # 滚动轨道：值是该轨道可再放新弹幕的时间
     top_tracks: list[float] = []       # 顶部固定
     bottom_tracks: list[float] = []    # 底部固定
-    priv_tracks: list[float] = []      # 左下角特权消息
+    priv_tracks: list[float] = []      # 左下角消息
+    priv_heights: list[int] = []       # 每个消息块的高度，用来从下往上累加
     dropped = 0
 
     allowed = None
@@ -582,30 +674,51 @@ def render_ass(records: list[dict], ass_path: str, max_lines: int = 4, duration:
                 continue
 
         start = float(r.get('offset', 0) or 0)
-        text = _escape_ass_text(subtitle_text(r, show_user))
-        if not text.strip():
+        if not str(r.get('content') or '').strip() and not str(r.get('gift_name') or '').strip():
             continue
 
-        # ---------- 特权消息：走 DanmakuFactory 的消息框，左下角从下往上堆 ----------
+        # ---------- 消息：左下角消息框，上舰额外画一层圆角卡片 ----------
         if rtype in PRIVILEGE_TYPES and privilege_layout != 'scroll':
             if privilege_layout == 'off':
                 continue
             seconds = message_seconds(r, msg_duration, privilege_cap, msg_source)
-            slot, _new = _take_slot(priv_tracks, start, priv_limit)
+            text = _ass_line_text(r, show_user, message=True)
+            block_h = MSG_CARD_H if rtype == 'guard' else msg_font + MSG_BOTTOM_PAD
+
+            slot, _new = _take_slot(priv_tracks, start, int(privilege_max or 0) or max_lines)
             if slot is None:
                 dropped += 1
                 continue
-            end = start + seconds
-            priv_tracks[slot] = end
-            y = height - bottom_margin - slot * line_height
-            prefix = '{\\an1\\pos(' + f'{left_margin},{y}' + ')}'
-            events.append(
-                f'Dialogue: 0,{_fmt_ass_time(start)},{_fmt_ass_time(end)},Gift,priv{slot},0,0,0,,{prefix}{text}'
-            )
+            while len(priv_heights) <= slot:
+                priv_heights.append(block_h)
+            priv_heights[slot] = block_h
+            priv_tracks[slot] = start + seconds
+
+            used = sum(priv_heights[:slot]) if slot else 0
+            base = height - MSG_BOTTOM_PAD - used
+            y = base - block_h
+            blocks: list[tuple[int, int, int, str]] = []   # (layer, x, y, 文本)
+            if rtype == 'guard':
+                # 卡片：DMF 的 500x87 圆角矩形，浅米色 30% 不透明
+                card = ('{\\c&HFCE8D8\\alpha&H4D&\\p1\\bord0\\shad0}'
+                        'm 0 19 b 0 9 9 0 19 0 l 481 0 b 491 0 500 9 500 19 '
+                        'l 500 68 b 500 78 491 87 481 87 l 19 87 b 9 87 0 78 0 68')
+                blocks.append((0, left_margin, y, card))
+                guard_fs = max(12, int(round(msg_font * 30.0 / 38.0)))
+                # 卡片里两行：上面深棕色的用户名，下面深灰的欢迎语（DMF 就这两行）
+                guard_user = _escape_ass_text(r.get('user') or '')
+                if show_user and guard_user:
+                    blocks.append((1, left_margin + 9, y + 6,
+                                   f'{{\\c&H8A3619\\bord0\\shad0}}{guard_user}'))
+                blocks.append((1, left_margin + 9, y + 44,
+                               f'{{\\c&H313131\\fs{guard_fs}\\bord0\\shad0}}{_escape_ass_text(_msg_body(r))}'))
+            else:
+                blocks.append((1, left_margin, base - msg_font,
+                               _ass_line_text(r, show_user, message=True)))
+            events.extend(_message_events(start, seconds, blocks, left_margin, height))
             continue
 
         # ---------- 普通弹幕：按 DanmakuFactory 的 type 映射分流 ----------
-        style_name = SUBTITLE_STYLES.get(rtype, 'Danmaku')
         try:
             chat_mode = int(r.get('mode') or 1)
         except (TypeError, ValueError):
@@ -621,55 +734,67 @@ def render_ass(records: list[dict], ass_path: str, max_lines: int = 4, duration:
         else:
             kind = 'scroll'
 
+        text = None
         if kind == 'scroll':
             slot, _new = _take_slot(scroll_tracks, start, max_lines)
             if slot is None:
                 dropped += 1
                 continue
+            text = _ass_line_text(r, show_user, hard_space=True)
             end = start + scroll_duration
-            text_width = _ass_text_width(text, font_size)
+            text_width = _ass_text_width(subtitle_text(r, show_user), font_size)
             # 同轨道的两条不能追尾：前一条得先把尾部挪进画面，后一条才能出发，
             # 所需时间占整趟行程的比例正好是「宽度 / 行程总长」
             scroll_tracks[slot] = start + scroll_duration * text_width / (width + text_width) + 0.25
-            y = top_margin + slot * line_height
+            y = slot * line_height
             prefix = '{\\an7\\move(' + f'{width},{y},{-int(text_width)},{y}' + ')}'
         elif kind == 'l2r':
             slot, _new = _take_slot(scroll_tracks, start, max_lines)
             if slot is None:
                 dropped += 1
                 continue
+            text = _ass_line_text(r, show_user)
             end = start + scroll_duration
-            text_width = _ass_text_width(text, font_size)
+            text_width = _ass_text_width(subtitle_text(r, show_user), font_size)
             scroll_tracks[slot] = start + scroll_duration * text_width / (width + text_width) + 0.25
-            y = top_margin + slot * line_height
+            y = slot * line_height
             prefix = '{\\an7\\move(' + f'{-int(text_width)},{y},{width},{y}' + ')}'
         elif kind == 'top':
             slot, _new = _take_slot(top_tracks, start, max_lines)
             if slot is None:
                 dropped += 1
                 continue
+            text = _ass_line_text(r, show_user)
             end = start + duration
             top_tracks[slot] = end
-            y = top_margin + slot * line_height
+            y = slot * line_height
             prefix = '{\\an8\\pos(' + f'{width // 2},{y}' + ')}'
-            style_name = 'Fixed'
         else:
             slot, _new = _take_slot(bottom_tracks, start, max_lines)
             if slot is None:
                 dropped += 1
                 continue
+            text = _ass_line_text(r, show_user)
             end = start + duration
             bottom_tracks[slot] = end
-            y = height - bottom_margin - slot * line_height
-            prefix = '{\\an2\\pos(' + f'{width // 2},{y}' + ')}'
-            style_name = 'Fixed'
+            # 底部固定：DMF 让第一行贴着画面底边，往上按字号叠
+            y = height - (slot + 1) * line_height
+            prefix = '{\\an8\\pos(' + f'{width // 2},{y}' + ')}'
 
+        style_name = SUBTITLE_STYLES.get(rtype, 'Danmaku')
+        if kind in ('top', 'bottom'):
+            style_name = 'Fixed'
+        # 底部固定压在上面一层，和 DMF 一样（否则会被后写的弹幕盖住）
+        layer = 1 if kind == 'bottom' else 0
         events.append(
-            f'Dialogue: 0,{_fmt_ass_time(start)},{_fmt_ass_time(end)},{style_name},row{slot},0,0,0,,{prefix}{text}'
+            f'Dialogue: {layer},{_fmt_ass_time(start)},{_fmt_ass_time(end)},{style_name},row{slot},0,0,0,,{prefix}{text}'
         )
 
-    with open(ass_path, 'w', encoding='utf-8') as f:
-        f.write(header + '\n'.join(events) + '\n')
+    # DMF 写的是「带 BOM 的 UTF-8 + CRLF」，这里跟它一致，Windows 播放器最稳；
+    # 显式拼 CRLF 再以 newline='' 落盘，免得 Windows/Linux 两个环境输出不一样。
+    body = (header + '\n'.join(events) + '\n').replace('\n', '\r\n')
+    with open(ass_path, 'w', encoding='utf-8-sig', newline='') as f:
+        f.write(body)
     return len(events), dropped + filtered
 
 

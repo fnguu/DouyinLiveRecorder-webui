@@ -64,17 +64,28 @@ def read_records(xml_path: str) -> list:
                 mode = int(fields[1]) if len(fields) > 1 else 1
             except (TypeError, ValueError):
                 mode = 1
+            # 第 4 项是弹幕颜色（0xRRGGBB），ASS 里要用它给正文上色
+            try:
+                color = int(fields[3]) if len(fields) > 3 else 0xFFFFFF
+            except (TypeError, ValueError):
+                color = 0xFFFFFF
             records.append({
                 'type': 'chat', 'offset': _num(fields[0]) if fields else 0.0,
-                'user': attrs.get('user') or '', 'content': node.text or '', 'mode': mode,
+                'user': attrs.get('user') or '', 'content': node.text or '',
+                'mode': mode, 'color': color,
             })
         elif tag == 'gift':
             name = attrs.get('giftname') or '礼物'
             count = attrs.get('giftcount') or '1'
+            try:
+                count_num = max(1, int(float(count)))
+            except (TypeError, ValueError):
+                count_num = 1
             records.append({
                 'type': 'gift', 'offset': _num(attrs.get('ts')), 'user': attrs.get('user') or '',
                 'content': f'{name} x{count}', 'diamond': _num(attrs.get('price')),
                 'duration': _num(attrs.get('time')),
+                'gift_name': name, 'gift_count': count_num,
             })
         elif tag == 'sc':
             records.append({
@@ -88,6 +99,7 @@ def read_records(xml_path: str) -> list:
                 'type': 'guard', 'offset': _num(attrs.get('ts')), 'user': attrs.get('user') or '',
                 'content': f'开通 {name}', 'diamond': _num(attrs.get('price')),
                 'duration': _num(attrs.get('time')), 'guard_level': int(_num(attrs.get('level'))),
+                'guard_name': name,
             })
     return records
 
