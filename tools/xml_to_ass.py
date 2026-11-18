@@ -62,6 +62,10 @@ def main(argv=None):
     parser.add_argument('--msgbox-cap', type=float, default=0.0,
                         help='单条消息最长停留秒数（默认 0 = 不封顶）')
     parser.add_argument('--no-msgbox', action='store_true', help='不显示礼物/SC/上舰（同 --showmsgbox false）')
+    parser.add_argument('--msgbox-source', choices=('price', 'time'), default='price',
+                        help='消息框时长来源：price=按金额分档（默认），time=用消息自带的 time')
+    parser.add_argument('--no-usernames', action='store_true',
+                        help='不显示用户名（同 DanmakuFactory 的 --showusernames false）')
     args = parser.parse_args(argv)
 
     files = []
@@ -82,7 +86,8 @@ def main(argv=None):
                   max_lines=args.max_lines,
                   privilege_layout='off' if args.no_msgbox else 'corner',
                   privilege_max=args.msgbox_lines, privilege_cap=args.msgbox_cap,
-                  msg_duration=args.msgbox_duration)
+                  msg_duration=args.msgbox_duration, msg_source=args.msgbox_source,
+                  show_user=not args.no_usernames)
 
     ok = 0
     for path in files:

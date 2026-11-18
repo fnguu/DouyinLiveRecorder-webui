@@ -59,6 +59,9 @@ def style_from_config() -> dict:
         'privilege_max': int(max(0, num('礼物弹幕最多条数', 0))),
         'privilege_cap': max(0.0, num('礼物弹幕最长停留(秒)', 0)),
         'msg_duration': max(0.0, num('礼物消息框统一停留(秒)', 0)),
+        'msg_source': 'time' if str(ini.get('礼物消息框时长来源(按金额/自带)', '按金额')).strip()
+                                  .startswith(('自带', 'time', '消息')) else 'price',
+        'show_user': str(ini.get('弹幕字幕显示用户名(是/否)', '是')).strip() != '否',
     }
 
 

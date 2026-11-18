@@ -87,6 +87,8 @@ privilege_layout = '左下角'     # 礼物/SC/上舰：左下角(消息框) / �
 privilege_max = 0              # 0 = 按消息框高度自动决定堆几条
 privilege_cap = 0.0            # 0 = 不封顶，用消息自带的显示时长
 msg_duration = 0.0             # >0 时所有消息统一停留这么久（DanmakuFactory 的 --msgboxduration）
+msg_source = 'price'           # 消息框时长来源：price=按金额分档 / time=用消息自带时长
+subtitle_show_user = True      # 弹幕前是否显示「用户名:」
 recording_time_list = {}
 script_path = os.path.split(os.path.realpath(sys.argv[0]))[0]
 config_file = f'{script_path}/config/config.ini'
@@ -163,6 +165,8 @@ def subtitle_style_kwargs() -> dict:
         'privilege_max': privilege_max,
         'privilege_cap': privilege_cap,
         'msg_duration': msg_duration,
+        'msg_source': msg_source,
+        'show_user': subtitle_show_user,
     }
 
 
@@ -2215,6 +2219,11 @@ while True:
         msg_duration = max(0.0, float(read_config_value(config, '录制设置', '礼物消息框统一停留(秒)', 0)))
     except (TypeError, ValueError):
         msg_duration = 0.0
+    msg_source = ('time' if str(read_config_value(
+        config, '录制设置', '礼物消息框时长来源(按金额/自带)', '按金额')).strip().startswith(('自带', 'time', '消息'))
+        else 'price')
+    subtitle_show_user = str(read_config_value(
+        config, '录制设置', '弹幕字幕显示用户名(是/否)', '是')).strip() != '否'
     is_run_script = options.get(read_config_value(config, '录制设置', '是否录制完成后执行自定义脚本', "否"), False)
     custom_script = read_config_value(config, '录制设置', '自定义脚本执行命令', "") if is_run_script else None
     enable_proxy_platform = read_config_value(

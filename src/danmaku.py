@@ -293,12 +293,17 @@ SUBTITLE_PREFIX = {
 }
 
 
-def subtitle_text(record: dict) -> str:
+def subtitle_text(record: dict, show_user: bool = True) -> str:
     """字幕里显示的单行文本。普通消息带发言人，格式：用户名:弹幕内容；
-    stats 类（在线人数）没有发言人，只显示内容本身。"""
+    stats 类（在线人数）没有发言人，只显示内容本身。
+    show_user=False 时省掉「用户名:」，对应 DanmakuFactory 的 --showusernames false。"""
     prefix = SUBTITLE_PREFIX.get(record.get('type'), '')
-    body = f"{record.get('user', '')}:{record.get('content', '')}" if record.get('type') != 'stats' \
-        else record.get('content', '')
+    if record.get('type') == 'stats':
+        body = record.get('content', '')
+    elif not show_user:
+        body = record.get('content', '')
+    else:
+        body = f"{record.get('user', '')}:{record.get('content', '')}"
     return prefix + body
 
 
@@ -391,50 +396,68 @@ def _ass_text_width(text: str, font_size: int = SUBTITLE_FONT_SIZE) -> float:
 
 PRIVILEGE_TYPES = ('gift', 'sc', 'guard')
 
-# 消息框停留时长的兜底值，取 DanmakuFactory 的默认行为：
-#   - 礼物没有自带时长时给 5 秒（XmlFile.c: gift.duration == 0 -> 5 * 1000）
-#   - 上舰档位未知时给 18000（XmlFile.c 的 default 分支，ms）
-GIFT_FALLBACK_SECONDS = 5.0
-GUARD_FALLBACK_SECONDS = 18.0
+# 消息框停留时长的兜底与分档参数。
+# 金额单位一律按「厘」算（1 元 = 1000 厘，1 电池 = 100 厘），与 DanmakuFactory 一致：
+#   < 2000 电池    ：每电池 0.06 秒（100 电池 = 6 秒），最短 2 秒，最长 2 分钟
+#   2000~20000 电池：线性映射到 2~5 分钟
+#   >= 20000 电池  ：固定 6 分钟
+MSG_LOW_TIER = 2000          # 电池
+MSG_HIGH_TIER = 20000        # 电池
+MSG_LOW_MAX = 120.0          # 秒（2 分钟，低档封顶、中档起点）
+MSG_MID_MAX = 300.0          # 秒（5 分钟，中档封顶）
+MSG_HIGH_MAX = 360.0         # 秒（6 分钟，高档固定）
+MSG_MIN_SECONDS = 2.0        # 秒（低档下限）
+MSG_SECONDS_PER_BATTERY = 0.06
 
 
-def message_seconds(record: dict, fixed: float = 0.0, cap: float = 0.0) -> float:
-    """礼物 / SC / 上舰的消息框停留多久，规则照 DanmakuFactory。
+def message_seconds(record: dict, fixed: float = 0.0, cap: float = 0.0,
+                    source: str = 'price') -> float:
+    """礼物 / SC / 上舰的消息框停留多久。
 
-    DanmakuFactory 的做法（src/XmlFile.c + src/AssFile/AssFile.c）：
-      1. 配了 `--msgboxduration`（≥10ms）就所有消息统一用这个值；
-      2. 否则用消息自带的时长 —— XML 的 `time` 属性，也就是 B 站下发的
-         SC `time`（秒）和礼物的 `combo_stay_time`；
-      3. 上舰没有 time 时，DanmakuFactory 直接把「金瓜子数」当毫秒数用
-         （198000 -> 198 秒、1998000 -> 1998 秒），等价于「实付多少元就停多少秒」；
-      4. 礼物仍没有时长则 5 秒。
+    source='price'（默认）按金额分档，规则与自用版 DanmakuFactory 的
+    getMsgDurationByPrice() 一致（battery = 金瓜子 / 100）：
 
-    注意它**没有按价格分档**——价格只用于 `--giftminprice` 过滤。
-    cap > 0 时统一封顶，这是本项目的额外选项（默认 0 = 不封顶，与 DanmakuFactory 一致）。
+        battery <  2000 : 0.06 秒/电池，钳在 [2 秒, 2 分钟]
+        2000 ~ 20000    : 线性映射到 [2 分钟, 5 分钟]
+        battery >= 20000: 固定 6 分钟
+
+    source='time' 则优先用消息自带的时长（XML 的 `time` 属性：SC 的 time、
+    礼物的 combo_stay_time），没有才回落到上面的分档。
+
+    fixed > 0 时全部统一成这个值（DanmakuFactory 的 --msgboxduration 优先级最高）；
+    cap > 0 再统一封顶，是本项目的额外选项（默认 0 = 不封顶）。
     """
     rtype = str(record.get('type') or '').lower()
 
     if fixed and fixed >= 0.01:
         seconds = float(fixed)
     else:
-        try:
-            own = float(record.get('duration') or record.get('sc_time') or 0)
-        except (TypeError, ValueError):
-            own = 0.0
+        own = 0.0
+        if str(source).lower().startswith(('time', '自带', '消息')):
+            try:
+                own = float(record.get('duration') or record.get('sc_time') or 0)
+            except (TypeError, ValueError):
+                own = 0.0
         if own > 0:
             seconds = own
-        elif rtype == 'guard':
+        else:
             try:
                 coin = float(record.get('diamond') or 0)
             except (TypeError, ValueError):
                 coin = 0.0
-            seconds = coin / 1000.0 if coin > 0 else GUARD_FALLBACK_SECONDS
-        else:
-            seconds = GIFT_FALLBACK_SECONDS
+            battery = max(0.0, coin) / 100.0
+            if battery >= MSG_HIGH_TIER:
+                seconds = MSG_HIGH_MAX
+            elif battery >= MSG_LOW_TIER:
+                span = MSG_HIGH_TIER - MSG_LOW_TIER
+                seconds = MSG_LOW_MAX + (battery - MSG_LOW_TIER) * (MSG_MID_MAX - MSG_LOW_MAX) / span
+            else:
+                seconds = battery * MSG_SECONDS_PER_BATTERY
+                seconds = min(MSG_LOW_MAX, max(MSG_MIN_SECONDS, seconds))
 
     if cap and cap > 0:
         seconds = min(seconds, float(cap))
-    return max(seconds, 1.0)
+    return max(seconds, MSG_MIN_SECONDS)
 
 
 def _take_slot(tracks: list, start: float, limit: int):
@@ -455,7 +478,8 @@ def render_ass(records: list[dict], ass_path: str, max_lines: int = 4, duration:
                alpha: int = SUBTITLE_ALPHA, outline: int = SUBTITLE_OUTLINE,
                shadow: int = SUBTITLE_SHADOW, privilege_layout: str = 'corner',
                privilege_max: int = 0, privilege_cap: float = 0.0,
-               msg_duration: float = 0.0) -> tuple[int, int]:
+               msg_duration: float = 0.0, msg_source: str = 'price',
+               show_user: bool = True) -> tuple[int, int]:
     """把弹幕渲染成 ASS 字幕文件，返回 (写入条数, 丢弃条数)。
 
     弹幕位置与时长完全照 DanmakuFactory 的定义（src/XmlFile.c 的 type 映射 +
@@ -468,10 +492,12 @@ def render_ass(records: list[dict], ass_path: str, max_lines: int = 4, duration:
     `mode='fixed'` 是本项目的额外开关，会把普通弹幕一律收进顶部固定。
 
     礼物 / SC / 上舰（特权消息）默认走 DanmakuFactory 的**消息框**：
-    在左下角从下往上堆叠，停留时长见 message_seconds（优先用消息自带的
-    `time`，礼物兜底 5 秒，上舰按实付金额折秒）；msg_duration > 0 时全部
-    统一成这个时长，对应 DanmakuFactory 的 `--msgboxduration`。
+    在左下角从下往上堆叠，停留时长见 message_seconds（默认按金额分档：
+    2000 电池以下 2 秒~2 分钟、2000~20000 电池 2~5 分钟、20000 电池以上 6 分钟；
+    msg_source='time' 时优先用消息自带的 `time`）；msg_duration > 0 时全部
+    统一成那个时长，对应 DanmakuFactory 的 `--msgboxduration`。
     privilege_layout='scroll' 让它们跟着飘，'off' 直接不显示。
+    show_user=False 时只显示弹幕内容，不带「用户名:」前缀。
 
     playres 必须与最终视频的分辨率一致：libass 按 PlayRes 与实际画面的比例缩放，
     宽高比对不上时字幕会被拉扁或拉长。调用方应先用 probe_playres() 取实际分辨率。
@@ -556,7 +582,7 @@ def render_ass(records: list[dict], ass_path: str, max_lines: int = 4, duration:
                 continue
 
         start = float(r.get('offset', 0) or 0)
-        text = _escape_ass_text(subtitle_text(r))
+        text = _escape_ass_text(subtitle_text(r, show_user))
         if not text.strip():
             continue
 
@@ -564,7 +590,7 @@ def render_ass(records: list[dict], ass_path: str, max_lines: int = 4, duration:
         if rtype in PRIVILEGE_TYPES and privilege_layout != 'scroll':
             if privilege_layout == 'off':
                 continue
-            seconds = message_seconds(r, msg_duration, privilege_cap)
+            seconds = message_seconds(r, msg_duration, privilege_cap, msg_source)
             slot, _new = _take_slot(priv_tracks, start, priv_limit)
             if slot is None:
                 dropped += 1
@@ -672,7 +698,8 @@ class DanmakuRecorder:
                  subtitle_shadow: int = SUBTITLE_SHADOW,
                  subtitle_scroll_duration: float = SCROLL_DURATION,
                  privilege_layout: str = 'corner', privilege_max: int = 0,
-                 privilege_cap: float = 0.0, msg_duration: float = 0.0):
+                 privilege_cap: float = 0.0, msg_duration: float = 0.0,
+                 msg_source: str = 'price', show_user: bool = True):
         self.room_id = str(room_id)
         self.anchor_name = anchor_name or self.room_id
         self.formats = [f.strip().lower() for f in formats if f.strip()] or ['xml', 'ass']
@@ -713,6 +740,9 @@ class DanmakuRecorder:
             self.msg_duration = max(0.0, float(msg_duration or 0))
         except (TypeError, ValueError):
             self.msg_duration = 0.0
+        # 'price'（默认）= 按金额分档；'time' = 优先用消息自带时长
+        self.msg_source = str(msg_source or 'price').strip().lower()
+        self.show_user = bool(show_user)
         self.base_path = clean_base_path(save_file_path)
 
         self.xml_path = f'{self.base_path}.danmaku.xml'
@@ -1143,6 +1173,7 @@ class DanmakuRecorder:
             alpha=self.subtitle_alpha, outline=self.subtitle_outline, shadow=self.subtitle_shadow,
             privilege_layout=self.privilege_layout, privilege_max=self.privilege_max,
             privilege_cap=self.privilege_cap, msg_duration=self.msg_duration,
+            msg_source=self.msg_source, show_user=self.show_user,
         )
         logger.debug(
             f'弹幕 ASS 字幕已生成: {self.ass_path}'
@@ -1172,7 +1203,8 @@ def start_danmaku(room_id: str, save_file_path: str, anchor_name: str = '',
                   subtitle_shadow: int = SUBTITLE_SHADOW,
                   subtitle_scroll_duration: float = SCROLL_DURATION,
                   privilege_layout: str = 'corner', privilege_max: int = 0,
-                  privilege_cap: float = 0.0, msg_duration: float = 0.0) -> bool:
+                  privilege_cap: float = 0.0, msg_duration: float = 0.0,
+                  msg_source: str = 'price', show_user: bool = True) -> bool:
     key = os.path.abspath(clean_base_path(save_file_path))
     with _sessions_lock:
         if key in _sessions:
@@ -1183,7 +1215,7 @@ def start_danmaku(room_id: str, save_file_path: str, anchor_name: str = '',
                                    subtitle_alpha, subtitle_outline, subtitle_shadow,
                                    subtitle_scroll_duration,
                                    privilege_layout, privilege_max, privilege_cap,
-                                   msg_duration)
+                                   msg_duration, msg_source, show_user)
         ok = recorder.start()
         if ok:
             _sessions[key] = recorder

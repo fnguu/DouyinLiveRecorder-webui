@@ -290,7 +290,8 @@ class BiliDanmakuRecorder:
                  subtitle_outline: int = 0, subtitle_shadow: int = 1,
                  subtitle_scroll_duration: float = 12.0,
                  privilege_layout: str = 'corner', privilege_max: int = 0,
-                 privilege_cap: float = 0.0, msg_duration: float = 0.0, uid: str = '0'):
+                 privilege_cap: float = 0.0, msg_duration: float = 0.0,
+                 msg_source: str = 'price', show_user: bool = True, uid: str = '0'):
         self.room_id = str(room_id)
         self.anchor_name = anchor_name or self.room_id
         self.cookie = cookie or ''
@@ -319,6 +320,8 @@ class BiliDanmakuRecorder:
             self.msg_duration = max(0.0, float(msg_duration or 0))
         except (TypeError, ValueError):
             self.msg_duration = 0.0
+        self.msg_source = str(msg_source or 'price').strip().lower()
+        self.show_user = bool(show_user)
         self.uid = str(uid or '0')
 
         self.base_path = _clean_base(save_file_path)
@@ -820,6 +823,7 @@ class BiliDanmakuRecorder:
             alpha=self.subtitle_alpha, outline=self.subtitle_outline, shadow=self.subtitle_shadow,
             privilege_layout=self.privilege_layout, privilege_max=self.privilege_max,
             privilege_cap=self.privilege_cap, msg_duration=self.msg_duration,
+            msg_source=self.msg_source, show_user=self.show_user,
         )
         logger.debug(f'B站弹幕 ASS 已生成: {self.ass_path}（写入 {written} 条'
                      + (f'，丢弃 {dropped} 条' if dropped else '') + '）')

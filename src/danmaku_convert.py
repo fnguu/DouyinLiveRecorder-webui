@@ -109,7 +109,7 @@ def style_defaults() -> dict:
                 font_size=SUBTITLE_FONT_SIZE, scroll_duration=SCROLL_DURATION,
                 alpha=SUBTITLE_ALPHA, outline=SUBTITLE_OUTLINE, shadow=SUBTITLE_SHADOW,
                 privilege_layout='corner', privilege_max=0, privilege_cap=0.0,
-                msg_duration=0.0)
+                msg_duration=0.0, msg_source='price', show_user=True)
 
 
 def convert_file(xml_path: str, overwrite: bool = False, resolution=None, **render_kwargs) -> dict:
