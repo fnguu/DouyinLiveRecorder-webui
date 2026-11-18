@@ -57,6 +57,14 @@
     } catch (e) { return ''; }
   }
 
+  function mediaUrl(path) {
+    // 原生 <video>/<a download> 带不了 X-DLR-Token 头，Cookie 又被挡掉时只能靠
+    // URL 里的 token 鉴权；没有 token 就退回原来的写法（靠 Cookie）。
+    const token = authToken();
+    const q = `path=${encodeURIComponent(path)}`;
+    return token ? `/api/media?${q}&token=${encodeURIComponent(token)}` : `/api/media?${q}`;
+  }
+
   function authHeaders(extra) {
     const headers = Object.assign({ 'Content-Type': 'application/json' }, extra || {});
     const token = authToken();
@@ -543,7 +551,7 @@
     const name = file.name || '播放';
     const ext = (name.split('.').pop() || '').toLowerCase();
     const needRemux = ['ts', 'mkv', 'flv'].includes(ext);
-    const url = `/api/media?path=${encodeURIComponent(file.path)}`;
+    const url = mediaUrl(file.path);
     openModal({
       title: name,
       width: 960,
@@ -588,7 +596,7 @@
             <span class="file-name" title="${esc(f.path)}">${esc(f.name)}</span>
             <span class="file-meta">${fmtSize(f.size)} · ${esc(f.mtime)}</span>
             <button class="btn primary file-play" data-act="play">播放</button>
-            <a class="icon-btn file-dl" href="/api/media?path=${encodeURIComponent(f.path)}" download="${esc(f.name)}" title="下载">
+            <a class="icon-btn file-dl" href="${mediaUrl(f.path)}" download="${esc(f.name)}" title="下载">
               <svg viewBox="0 0 24 24"><path d="M12 16l-5-5h3V4h4v7h3l-5 5zM5 18h14v2H5z"/></svg>
             </a>
           </div>`).join('')}</div>`;
@@ -599,7 +607,7 @@
       <details class="asset-box" open>
         <summary>弹幕 / 字幕文件 <em>${assets.length} 个</em></summary>
         <div class="asset-items">${assets.map((f) => `
-          <a class="asset-item" href="/api/media?path=${encodeURIComponent(f.path)}" download="${esc(f.name)}" title="${esc(f.path)}">
+          <a class="asset-item" href="${mediaUrl(f.path)}" download="${esc(f.name)}" title="${esc(f.path)}">
             <span class="asset-ext">${esc((f.ext || '').toUpperCase())}</span>
             <span class="asset-name">${esc(f.name)}</span>
             <span class="asset-meta">${fmtSize(f.size)} · ${esc(f.mtime)}</span>
@@ -632,9 +640,25 @@
     wrap.hidden = false;
     $('#player-name').textContent = name;
     $('#player-tip').hidden = !['ts', 'mkv', 'flv'].includes(ext);
-    video.onerror = () => toast('这个文件无法在线播放，可以点右侧下载后用本地播放器打开', 'err');
+    video.onerror = async () => {
+      // 顺手问一下接口返回什么状态码（401/404/415 处理方式完全不同）。
+      // 只要响应头就立刻中断，别为了诊断把几个 G 的录像整个拉下来。
+      let detail = '';
+      const ctrl = new AbortController();
+      try {
+        const r = await fetch(video.src, {
+          credentials: 'include',
+          headers: { Range: 'bytes=0-0' },
+          signal: ctrl.signal,
+        });
+        detail = r.ok ? '（文件能读到，但浏览器不支持这个编码）' : `（HTTP ${r.status}）`;
+      } catch (e) { /* 网络错误或已中断，忽略 */ } finally {
+        ctrl.abort();
+      }
+      toast(`这个文件无法在线播放${detail}，可以点右侧下载后用本地播放器打开`, 'err');
+    };
     try { video.pause(); } catch (e) { /* ignore */ }
-    video.src = `/api/media?path=${encodeURIComponent(path)}`;
+    video.src = mediaUrl(path);
     video.load();
     const p = video.play();
     if (p && p.catch) p.catch(() => {});

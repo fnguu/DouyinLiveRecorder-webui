@@ -88,6 +88,13 @@ def _cookie_token(request: Request) -> str:
     header = request.headers.get('authorization', '')
     if header.lower().startswith('bearer '):
         return header[7:].strip()
+    # <video src> 和 <a download> 是浏览器原生请求，发不了自定义头；Cookie 被
+    # iframe/第三方限制挡掉时这类请求就没法鉴权。只对媒体接口放行 ?token=，
+    # 不让它出现在其它接口上（URL 里的 token 会进日志和 referer）。
+    if request.url.path == '/api/media':
+        query_token = request.query_params.get('token', '')
+        if query_token:
+            return query_token
     return request.cookies.get(auth.COOKIE_NAME, '') or ''
 
 
