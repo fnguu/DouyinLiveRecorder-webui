@@ -28,6 +28,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from email.utils import parsedate_to_datetime
 
 from .config_io import read_ini
 from .paths import BASE_DIR, CONFIG_DIR
@@ -166,22 +167,48 @@ def _rows():
 def douyin_expiry(cookie: str) -> int:
     """从抖音 Cookie 的 sid_guard 里取过期时间戳，取不到返回 0。
 
-    形如 ``sid_guard=<sessionid>|<过期时间戳>|<有效期秒数>|<过期日期>``，
-    分号里的 ``|`` 常被 URL 编码成 ``%7C``，所以先 unquote 再切。
+    sid_guard 形如 ``<sessionid>|<ts>|<ttl>|<日期 GMT>``，坑在于第二段的含义两边不一样：
+      B 站：<ts> 就是过期时间；
+      抖音：<ts> 是**登录时间**（和 login_time 完全一样），真正过期 = <ts> + <ttl>。
+    所以优先读第四段的日期字符串 —— 它两边写的都是真正的过期时刻；日期读不出来时，
+    再按「ts 早于现在、ts+ttl 晚于现在就是登录时间」推算，都不成立才当过期时间用。
     """
     match = re.search(r'(?:^|;\s*)sid_guard=([^;]*)', cookie or '')
     if not match:
         return 0
     raw = urllib.parse.unquote(match.group(1).strip())
-    parts = raw.split('|')
+    parts = [p.strip() for p in raw.split('|')]
     if len(parts) < 2:
         return 0
+
+    def plausible(ts: int) -> bool:
+        # 合法范围留在 2001 ~ 2096 年之间，挡住把用户 id 当时间戳的误判
+        return 1_000_000_000 < ts < 4_000_000_000
+
+    # 1) 第四段的 GMT 日期最可靠（两边平台写的都是真正的过期时刻）
+    if len(parts) >= 4 and parts[3]:
+        try:
+            stamp = int(parsedate_to_datetime(parts[3].replace('+', ' ')).timestamp())
+            if plausible(stamp):
+                return stamp
+        except (TypeError, ValueError, OverflowError):
+            pass
+
     try:
-        ts = int(parts[1].strip())
-    except ValueError:
+        ts = int(parts[1])
+    except (IndexError, ValueError):
         return 0
-    # 合法范围留在 2001 ~ 2096 年之间，挡住把用户 id 当时间戳的误判
-    return ts if 1_000_000_000 < ts < 4_000_000_000 else 0
+    if not plausible(ts):
+        return 0
+    try:
+        ttl = int(parts[2])
+    except (IndexError, ValueError):
+        ttl = 0
+    now = time.time()
+    if ttl > 0 and ts <= now < ts + ttl:
+        # 抖音口径：第二段是登录时间，加有效期才是过期时刻
+        return ts + ttl
+    return ts
 
 
 def _get_json(url: str, cookie: str, referer: str = '') -> dict:
