@@ -134,7 +134,16 @@ def convert_file(xml_path: str, overwrite: bool = False, resolution=None, **rend
             return {'status': 'skip', 'message': '没有可渲染的弹幕', 'ass': ass_path}
         written, dropped = render_ass(records, ass_path, playres=playres, **style)
     except Exception as exc:
-        return {'status': 'error', 'message': f'{type(exc).__name__}: {exc}', 'ass': ass_path}
+        msg = f'{type(exc).__name__}: {exc}'
+        # 被录制进程顶掉记录的文件会长这样：两段 <d> 粘在同一行，解析器报 invalid token。
+        # 这里给出可执行的下一步，别让人对着 ParseError 发呆。
+        try:
+            with open(xml_path, 'r', encoding='utf-8', errors='replace') as f:
+                if any(ln.count('<d p=') > 1 for ln in f):
+                    msg += '（文件里有被顶掉后粘在一起的记录，用 tools/normalize_danmaku_xml.py --repair --apply 修复）'
+        except OSError:
+            pass
+        return {'status': 'error', 'message': msg, 'ass': ass_path}
 
     return {
         'status': 'ok', 'ass': ass_path, 'written': written, 'dropped': dropped,

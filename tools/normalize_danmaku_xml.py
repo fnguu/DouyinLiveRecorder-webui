@@ -232,6 +232,81 @@ def collect(paths):
     return files
 
 
+
+def _ass_index(xml_path: str) -> list:
+    """同名 .ass 里的弹幕行 -> [(开始秒, 文本)]，用于反查被截断那条的内容。"""
+    ass_path = xml_path[:-4] + '.ass' if xml_path.lower().endswith('.xml') else xml_path + '.ass'
+    if not os.path.exists(ass_path):
+        return []
+    rows = []
+    with open(ass_path, 'r', encoding='utf-8', errors='replace') as f:
+        for line in f:
+            m = re.match(r'Dialogue: 0,(\d+):(\d{2}):([\d.]+),(\d+):(\d{2}):([\d.]+),Danmaku,', line)
+            if not m:
+                continue
+            start = int(m.group(1)) * 3600 + int(m.group(2)) * 60 + float(m.group(3))
+            body = line.split(',,', 1)[-1].rstrip('\r\n')
+            text = body.split('}', 1)[1] if '}' in body else body
+            rows.append((start, text))
+    return rows
+
+
+def _repair_without_bak(path: str, apply: bool = False, force: bool = False) -> dict:
+    """没有 .bak 时的外科修复：只把粘连的那一行拆成两条完整记录。"""
+    with open(path, 'r', encoding='utf-8', errors='replace', newline='') as f:
+        cur_text = f.read()
+    if not force and not cur_text.rstrip().endswith('</i>'):
+        return {'error': '文件还没收尾（缺 </i>，仍在录制），等这场录完再修'}
+
+    newline = '\r\n' if '\r\n' in cur_text else '\n'
+    lines = cur_text.split(newline)
+    bad_idx = next((i for i, ln in enumerate(lines) if ln.count('<d p=') > 1), None)
+    if bad_idx is None:
+        return {'error': '没找到被顶掉的拼接行，无需修复'}
+
+    bad_line = lines[bad_idx]
+    second = bad_line.find('<d p=', bad_line.find('<d p=') + 1)
+    head, tail = bad_line[:second].rstrip(), bad_line[second:].strip()
+    m = re.match(r'\s*<d p="([^"]*)', head)
+    prefix = m.group(1) if m else ''
+    try:
+        offset = float(prefix.split(',')[0])
+    except (IndexError, ValueError):
+        offset = 0.0
+
+    index = _ass_index(path)
+    text = ''
+    if index:
+        near = min(index, key=lambda r: abs(r[0] - offset))
+        if abs(near[0] - offset) <= 0.2:
+            text = near[1]
+    user, _, content = text.partition(':') if text else ('', '', '')
+
+    rebuilt = ''
+    if content:
+        uid = phash = ''
+        hit = re.search(r'<d p="([^"]*)" user="' + re.escape(user) + r'">', cur_text)
+        if hit:
+            fields = hit.group(1).split(',')
+            if len(fields) >= 8:
+                uid, phash = fields[6], fields[7]
+        rebuilt = f'  <d p="{prefix},{uid or "0"},{phash}" user="{user}">{content}</d>'
+
+    new_lines = lines[:bad_idx] + ([rebuilt] if rebuilt else []) + [tail] + lines[bad_idx + 1:]
+    new_text = newline.join(new_lines)
+    try:
+        ET.fromstring(re.sub(r'<XmlStyle>.*?</XmlStyle>', '', new_text, flags=re.S))
+    except ET.ParseError as exc:
+        return {'error': f'拼出来的内容解析失败，已放弃写入：{exc}'}
+
+    if apply:
+        shutil.copy2(path, path + '.damaged')
+        with open(path, 'w', encoding='utf-8', newline='') as f:
+            f.write(new_text)
+    return {'recovered': rebuilt.strip()[:100], 'dropped_fragment': '' if rebuilt else head.strip()[:100],
+            'bak_records': 0, 'after_records': 0, 'source': 'ass' if rebuilt else 'none'}
+
+
 def repair_file(path: str, conv: 'Converter', apply: bool = False, force: bool = False) -> dict:
     """修复「录制中被写坏」的文件：某一行被续写的记录顶掉，两段粘在一起。
 
@@ -239,13 +314,17 @@ def repair_file(path: str, conv: 'Converter', apply: bool = False, force: bool =
     它下一次写入仍按自己的旧偏移落笔，正好压在上一条记录身上。表现就是
     ``<d p="旧记录前段  <d p="新记录全文</d>`` 挤在同一行，旧记录尾部丢失。
 
-    修复办法：以同名 .bak（被改写之前的完整快照）里的记录为准，拼上当前文件里
-    损坏行之后的记录，重排后整份重写 —— 因为此时录制已经结束，不存在再被顶掉
-    的问题。缺 .bak 就拒绝执行，绝不猜。
+    修复办法有两条：
+      1. 有同名 .bak（被改写之前的完整快照）：以它里面的记录为准，拼上当前文件里
+         损坏行之后的记录，整份重排重写；
+      2. 没有 .bak：只做外科手术 —— 从同名 .ass 里取回被截断那条的文本（录制结束
+         时是按内存里的完整记录渲染的，所以 .ass 里内容是全的），补成完整一行，
+         再把粘连的后半段放回下一行。取不到 .ass 或对不上时间就只保留后半段，
+         并在结果里标明丢了哪条。
     """
     bak = path + '.bak'
     if not os.path.exists(bak):
-        return {'error': '缺少同名 .bak，无法还原被截断的记录'}
+        return _repair_without_bak(path, apply=apply, force=force)
     with open(path, 'r', encoding='utf-8', errors='replace', newline='') as f:
         cur_text = f.read()
     if not force and not cur_text.rstrip().endswith('</i>'):
@@ -317,9 +396,15 @@ def main(argv=None):
             if 'error' in info:
                 print(f'✗ {name}: {info["error"]}')
                 continue
-            print(f'{"+" if args.apply else "·"} {name}: '
-                  f'从 .bak 取回 {info["bak_records"]} 条记录，损坏行之后 {info["after_records"]} 条'
-                  + ('，已写回（原文件留为 .damaged）' if args.apply else '（未改动，加 --apply 写回）'))
+            mark = '+' if args.apply else '·'
+            tail = '，已写回（原文件留为 .damaged）' if args.apply else '（未改动，加 --apply 写回）'
+            if info.get('source') == 'ass':
+                print(f'{mark} {name}: 从 .ass 取回被截断的那条 —— {info["recovered"]}{tail}')
+            elif info.get('source') == 'none':
+                print(f'{mark} {name}: 找不到同名 .ass，丢弃不可还原的片段「{info["dropped_fragment"]}」{tail}')
+            else:
+                print(f'{mark} {name}: '
+                      f'从 .bak 取回 {info["bak_records"]} 条记录，损坏行之后 {info["after_records"]} 条{tail}')
         return 0
     total = dict(sc=0, guard=0, guard_dropped=0, gift_fixed=0, gift_unit=0,
                  gift_unclear=0, header=0, price_fmt=0)
