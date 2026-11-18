@@ -289,8 +289,8 @@ class BiliDanmakuRecorder:
                  subtitle_font_size: int = 42, subtitle_alpha: int = 75,
                  subtitle_outline: int = 0, subtitle_shadow: int = 1,
                  subtitle_scroll_duration: float = 12.0,
-                 privilege_layout: str = 'corner', privilege_max: int = 6,
-                 privilege_cap: float = 0.0, uid: str = '0'):
+                 privilege_layout: str = 'corner', privilege_max: int = 0,
+                 privilege_cap: float = 0.0, msg_duration: float = 0.0, uid: str = '0'):
         self.room_id = str(room_id)
         self.anchor_name = anchor_name or self.room_id
         self.cookie = cookie or ''
@@ -310,11 +310,15 @@ class BiliDanmakuRecorder:
         self.subtitle_scroll_duration = max(1.0, float(subtitle_scroll_duration or 12.0))
         # 礼物/SC/上舰：corner=堆在左下角（默认） scroll=跟着飘 off=不显示
         self.privilege_layout = str(privilege_layout or 'corner').strip().lower()
-        self.privilege_max = max(1, int(privilege_max or 6))
+        self.privilege_max = max(0, int(privilege_max or 0))
         try:
             self.privilege_cap = max(0.0, float(privilege_cap or 0))
         except (TypeError, ValueError):
             self.privilege_cap = 0.0
+        try:
+            self.msg_duration = max(0.0, float(msg_duration or 0))
+        except (TypeError, ValueError):
+            self.msg_duration = 0.0
         self.uid = str(uid or '0')
 
         self.base_path = _clean_base(save_file_path)
@@ -609,9 +613,15 @@ class BiliDanmakuRecorder:
         except (TypeError, ValueError):
             count = 1
         diamond = unit_price * count if unit_price else total_coin
+        # combo_stay_time 是连击礼物的停留时长（秒），DanmakuFactory 拿它当消息框
+        # 的显示时长；没有就留空，转换端按它的兜底值 5 秒处理。
+        try:
+            stay = float(data.get('combo_stay_time') or 0)
+        except (TypeError, ValueError):
+            stay = 0.0
         return self._pack('gift', data.get('timestamp'), uid, uname, f'{name} x{num}',
                           diamond=diamond, gift_name=name, gift_count=num,
-                          price_unit=PRICE_UNIT)
+                          price_unit=PRICE_UNIT, duration=stay or None)
 
     def _gift_v2(self, data: dict) -> list:
         """SEND_GIFT_V2：访客（未登录/新版客户端）现在收的是这条，data.pb 是 protobuf。
@@ -718,7 +728,7 @@ class BiliDanmakuRecorder:
         return self._pack('guard', data.get('start_time') or data.get('ts'), uid, uname,
                           f'开通 {name}' + (f' x{num}' if num and int(num) > 1 else ''),
                           diamond=round(price * 1000), guard_name=name, gift_name=name,
-                          gift_count=num, price_unit=PRICE_UNIT)
+                          gift_count=num, price_unit=PRICE_UNIT, guard_level=int(level or 0))
 
     def _interact(self, data: dict) -> Optional[dict]:
         # INTERACT_WORD_V2 的字段是 protobuf base64，取不到明文时退回 V1 结构
@@ -809,7 +819,7 @@ class BiliDanmakuRecorder:
             scroll_duration=self.subtitle_scroll_duration,
             alpha=self.subtitle_alpha, outline=self.subtitle_outline, shadow=self.subtitle_shadow,
             privilege_layout=self.privilege_layout, privilege_max=self.privilege_max,
-            privilege_cap=self.privilege_cap,
+            privilege_cap=self.privilege_cap, msg_duration=self.msg_duration,
         )
         logger.debug(f'B站弹幕 ASS 已生成: {self.ass_path}（写入 {written} 条'
                      + (f'，丢弃 {dropped} 条' if dropped else '') + '）')

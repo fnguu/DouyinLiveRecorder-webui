@@ -77,13 +77,17 @@ def _uid_text(record: dict) -> str:
 
 
 def xml_mode(record: dict) -> int:
-    """把消息类型映射成 B 站的 8 种弹幕模式里最接近的一种。"""
+    """把消息类型映射成 B 站的 8 种弹幕模式里最接近的一种。
+
+    1/2/3 = 滚动（右→左），4 = 底部固定，5 = 顶部固定，6 = 逆向滚动（左→右）。
+    DanmakuFactory 就是按这六个值分流的，所以 6 必须原样保留，不能并进 1。
+    """
     mode = record.get('mode')
     try:
         mode = int(mode)
     except (TypeError, ValueError):
         mode = 0
-    if mode in (1, 2, 3, 4, 5):
+    if mode in (1, 2, 3, 4, 5, 6):
         return mode
     return 1  # 默认滚动
 
@@ -279,26 +283,41 @@ def xml_line(record: dict, index: int = 0) -> str:
             f'{esc(record.get("content"))}</d>\n')
 
 
+def _seconds_text(record: dict) -> str:
+    """消息自带的显示时长（秒）。DanmakuFactory 就是读 XML 的 time 属性决定消息框停多久。"""
+    for key in ('duration', 'sc_time'):
+        try:
+            val = float(record.get(key) or 0)
+        except (TypeError, ValueError):
+            continue
+        if val > 0:
+            return f'{val:g}'
+    return ''
+
+
 def gift_line(record: dict) -> str:
-    """一条礼物 -> 一行 <gift>（自闭合，播放器不会当成弹幕）。"""
+    """一条礼物 -> 一行 <gift>（自闭合，播放器不会当成弹幕）。
+
+    time 是这条礼物该显示多久（秒）：B 站下发的 combo_stay_time，没有就不写，
+    由转换端按 DanmakuFactory 的兜底值（5 秒）处理。
+    """
+    secs = _seconds_text(record)
+    time_attr = f' time="{secs}"' if secs else ''
     return (f'  <gift ts="{_offset_text(record)}" user="{esc(record.get("user"))}"'
             f' uid="{esc(_uid_text(record))}"'
             f' giftname="{esc(record.get("gift_name") or record.get("content") or "礼物")}"'
             f' giftcount="{esc(record.get("gift_count") or 1)}"'
-            f' price="{_price_text(record)}"{_unit_attr(record)}/>\n')
+            f' price="{_price_text(record)}"{_unit_attr(record)}{time_attr}/>\n')
 
 
 def sc_line(record: dict) -> str:
     """一条醒目留言 -> 一行 <sc>。
 
-    time 是 B 站给的这条 SC 的显示时长（秒），转 ASS 时直接用它，
-    没有才按价格档位估 —— DanmakuFactory 也是这么处理的。
+    time 是 B 站给的这条 SC 的显示时长（秒）。DanmakuFactory 直接拿它当消息框
+    停留时长（XmlFile.c 里把 time 属性读成 gift.duration），我们保持一致。
     """
-    try:
-        sc_time = int(float(record.get('sc_time') or 0))
-    except (TypeError, ValueError):
-        sc_time = 0
-    time_attr = f' time="{sc_time}"' if sc_time > 0 else ''
+    secs = _seconds_text(record)
+    time_attr = f' time="{secs}"' if secs else ''
     return (f'  <sc ts="{_offset_text(record)}" user="{esc(record.get("user"))}"'
             f' uid="{esc(_uid_text(record))}"'
             f' price="{_price_text(record)}"{_unit_attr(record)}{time_attr}>'
@@ -306,11 +325,22 @@ def sc_line(record: dict) -> str:
 
 
 def guard_line(record: dict) -> str:
-    """一条上舰 -> 一行 <guard>（自闭合）。guardname 如 舰长/提督/总督。"""
+    """一条上舰 -> 一行 <guard>（自闭合）。guardname 如 舰长/提督/总督。
+
+    level 保留 B 站的档位（1 总督 / 2 提督 / 3 舰长），DanmakuFactory 靠它
+    反推价格与停留时长；time 有就一并写上。
+    """
+    secs = _seconds_text(record)
+    time_attr = f' time="{secs}"' if secs else ''
+    try:
+        level = int(record.get('guard_level') or 0)
+    except (TypeError, ValueError):
+        level = 0
+    level_attr = f' level="{level}"' if level in (1, 2, 3) else ''
     return (f'  <guard ts="{_offset_text(record)}" user="{esc(record.get("user"))}"'
             f' uid="{esc(_uid_text(record))}"'
             f' guardname="{esc(record.get("guard_name") or record.get("gift_name") or "舰长")}"'
-            f' price="{_price_text(record)}"{_unit_attr(record)}/>\n')
+            f' price="{_price_text(record)}"{_unit_attr(record)}{level_attr}{time_attr}/>\n')
 
 
 class XmlWriter:

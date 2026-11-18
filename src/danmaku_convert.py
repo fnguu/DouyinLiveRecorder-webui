@@ -58,7 +58,8 @@ def read_records(xml_path: str) -> list:
         attrs = node.attrib
         if tag == 'd':
             fields = (attrs.get('p') or '').split(',')
-            # p: offset,mode,size,color,ts,...   mode 4=底部固定 5=顶部固定 其它=滚动
+            # p: offset,mode,size,color,ts,...
+            # mode 与 DanmakuFactory 一致：1/2/3 滚动，4 底部固定，5 顶部固定，6 逆向滚动
             try:
                 mode = int(fields[1]) if len(fields) > 1 else 1
             except (TypeError, ValueError):
@@ -73,6 +74,7 @@ def read_records(xml_path: str) -> list:
             records.append({
                 'type': 'gift', 'offset': _num(attrs.get('ts')), 'user': attrs.get('user') or '',
                 'content': f'{name} x{count}', 'diamond': _num(attrs.get('price')),
+                'duration': _num(attrs.get('time')),
             })
         elif tag == 'sc':
             records.append({
@@ -85,6 +87,7 @@ def read_records(xml_path: str) -> list:
             records.append({
                 'type': 'guard', 'offset': _num(attrs.get('ts')), 'user': attrs.get('user') or '',
                 'content': f'开通 {name}', 'diamond': _num(attrs.get('price')),
+                'duration': _num(attrs.get('time')), 'guard_level': int(_num(attrs.get('level'))),
             })
     return records
 
@@ -101,11 +104,12 @@ def resolve_playres(xml_path: str, forced=None) -> tuple:
 
 
 def style_defaults() -> dict:
-    """DanmakuFactory 默认预设。"""
+    """DanmakuFactory 默认预设（分辨率另由 resolve_playres 决定）。"""
     return dict(duration=FIXED_DURATION, mode='scroll', max_lines=0,
                 font_size=SUBTITLE_FONT_SIZE, scroll_duration=SCROLL_DURATION,
                 alpha=SUBTITLE_ALPHA, outline=SUBTITLE_OUTLINE, shadow=SUBTITLE_SHADOW,
-                privilege_layout='corner', privilege_max=6, privilege_cap=0.0)
+                privilege_layout='corner', privilege_max=0, privilege_cap=0.0,
+                msg_duration=0.0)
 
 
 def convert_file(xml_path: str, overwrite: bool = False, resolution=None, **render_kwargs) -> dict:

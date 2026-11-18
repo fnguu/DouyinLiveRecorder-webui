@@ -55,6 +55,13 @@ def main(argv=None):
     parser.add_argument('--fixed', action='store_true', help='改用顶部固定模式（默认滚动）')
     parser.add_argument('--max-lines', type=int, default=0,
                         help='同屏最多几行（默认 0 = 按画面高度自动铺满）')
+    parser.add_argument('--msgbox-duration', type=float, default=0.0,
+                        help='礼物/SC/上舰 统一停留秒数（默认 0 = 用消息自带时长，同 DanmakuFactory --msgboxduration）')
+    parser.add_argument('--msgbox-lines', type=int, default=0,
+                        help='消息框同时最多几条（默认 0 = 按消息框高度自动）')
+    parser.add_argument('--msgbox-cap', type=float, default=0.0,
+                        help='单条消息最长停留秒数（默认 0 = 不封顶）')
+    parser.add_argument('--no-msgbox', action='store_true', help='不显示礼物/SC/上舰（同 --showmsgbox false）')
     args = parser.parse_args(argv)
 
     files = []
@@ -72,7 +79,10 @@ def main(argv=None):
     kwargs = dict(duration=args.fixed_seconds, mode='fixed' if args.fixed else 'scroll',
                   font_size=args.font_size, scroll_duration=args.scroll_seconds,
                   alpha=args.alpha, outline=args.outline, shadow=args.shadow,
-                  max_lines=args.max_lines)
+                  max_lines=args.max_lines,
+                  privilege_layout='off' if args.no_msgbox else 'corner',
+                  privilege_max=args.msgbox_lines, privilege_cap=args.msgbox_cap,
+                  msg_duration=args.msgbox_duration)
 
     ok = 0
     for path in files:
