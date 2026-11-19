@@ -90,8 +90,12 @@ msg_duration = 0.0             # >0 时所有消息统一停留这么久（Danma
 msg_source = 'price'           # 消息框时长来源：price=按金额分档 / time=用消息自带时长
 # 抖音匿名探活：轮询时只问「开没开播」，不带用户的 Cookie；开播了再用 Cookie 取流
 douyin_anon_probe = True
+# 录制中「一个字节都不再写」超过这个秒数，就认为直播流卡死，主动收尾并重开一段
+stream_stall_timeout = 90
 subtitle_show_user = True      # 弹幕前是否显示「用户名:」
 recording_time_list = {}
+# 刚刚因为「直播流卡死」而中止的地址：下一轮不用等满整个循环时间，10 秒后就重试
+stream_stalled = set()
 script_path = os.path.split(os.path.realpath(sys.argv[0]))[0]
 config_file = f'{script_path}/config/config.ini'
 url_config_file = f'{script_path}/config/URL_config.ini'
@@ -569,6 +573,35 @@ def direct_download_stream(source_url: str, save_path: str, record_name: str, li
         return False
 
 
+def stream_is_stalled(size: int, last_size: int, last_grow: float, timeout: int,
+                      now: float | None = None) -> bool:
+    """输出文件大小没再变、且已经超过 timeout 秒 -> 判定直播流卡死。"""
+    if timeout <= 0:
+        return False
+    now = time.time() if now is None else now
+    return size == last_size and now - last_grow >= timeout
+
+
+def ffmpeg_quit(process) -> None:
+    """让 ffmpeg 正常收尾（写完文件头再退），Windows 下走 stdin 的 q。"""
+    try:
+        if os.name == 'nt':
+            if process.stdin:
+                process.stdin.write(b'q')
+                process.stdin.close()
+        else:
+            process.send_signal(signal.SIGINT)
+    except Exception:
+        pass
+    try:
+        process.wait(timeout=30)
+    except Exception:
+        try:
+            process.kill()
+        except Exception:
+            pass
+
+
 def check_subprocess(record_name: str, record_url: str, ffmpeg_command: list, save_type: str,
                      script_command: str | None = None) -> bool:
     save_file_path = ffmpeg_command[-1]
@@ -636,22 +669,43 @@ def check_subprocess(record_name: str, record_url: str, ffmpeg_command: list, sa
         create_var[subs_thread_name].daemon = True
         create_var[subs_thread_name].start()
 
+    # 直播流卡死检测：抖音的 FLV 连接会「半死」——TCP 还在、数据不再来，ffmpeg 就干等
+    # （实测兔娘 2026-11-19 那场：20:08 起一个字节没写，21:17 连接被 RST 才报 I/O error，
+    #  中间 69 分钟全丢）。这里盯输出文件大小，连续 stream_stall_timeout 秒不增长就
+    # 主动结束本段，让外层重新检测、开新分段继续录。
+    last_size = -1
+    last_grow = time.time()
+    stalled = False
+    watch_file = str(save_file_path)
+    if '%' in watch_file:      # 分段录制的模板路径（xxx_%03d.ts）没法直接 stat
+        watch_file = ''
+
     while process.poll() is None:
         if record_url in url_comments or exit_recording:
             color_obj.print_colored(f"[{record_name}]录制时已被注释,本条线程将会退出", color_obj.YELLOW)
             clear_record_info(record_name, record_url)
-            # process.terminate()
-            if os.name == 'nt':
-                if process.stdin:
-                    process.stdin.write(b'q')
-                    process.stdin.close()
-            else:
-                process.send_signal(signal.SIGINT)
-            process.wait()
+            ffmpeg_quit(process)
             stop_danmaku_by_key(danmaku_key)
             ui_unmark(record_url)
             return True
         time.sleep(1)
+        if stream_stall_timeout > 0 and watch_file:
+            try:
+                size = os.path.getsize(watch_file)
+            except OSError:
+                size = last_size
+            if size != last_size:
+                last_size = size
+                last_grow = time.time()
+            elif stream_is_stalled(size, last_size, last_grow, stream_stall_timeout):
+                stalled = True
+                stream_stalled.add(record_url)
+                logger.warning(
+                    f'{record_name} 直播流 {stream_stall_timeout} 秒没有新数据'
+                    f'（文件停在 {max(size, 0) / 1024 / 1024:.0f} MB），结束本段并准备重新取流'
+                )
+                ffmpeg_quit(process)
+                break
 
     return_code = process.returncode
     stop_time = time.strftime('%Y-%m-%d %H:%M:%S')
@@ -692,6 +746,9 @@ def check_subprocess(record_name: str, record_url: str, ffmpeg_command: list, sa
             run_script(script_command)
             logger.debug("脚本命令执行结束!")
 
+    elif stalled:
+        color_obj.print_colored(
+            f"\n{record_name} {stop_time} 直播流卡住，已结束本段（会自动重新取流续录）\n", color_obj.YELLOW)
     else:
         color_obj.print_colored(f"\n{record_name} {stop_time} 直播录制出错,返回码: {return_code}\n", color_obj.RED)
 
@@ -1904,6 +1961,12 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
                     num = 0
                 x = num
 
+                # 刚卡死过：别等满一个循环周期，10 秒后就重新取流接着录
+                if record_url in stream_stalled:
+                    stream_stalled.discard(record_url)
+                    x = 10
+                    logger.info(f'{anchor_name} 上一段因直播流卡住中断，10 秒后重新取流')
+
                 if error_count > 20:
                     x = x + 60
                     color_obj.print_colored("\r瞬时错误太多,延迟加60秒", color_obj.YELLOW)
@@ -2256,6 +2319,10 @@ while True:
         config, '录制设置', '弹幕字幕显示用户名(是/否)', '是')).strip() != '否'
     douyin_anon_probe = str(read_config_value(
         config, '录制设置', '抖音匿名探活(是/否)', '是')).strip() != '否'
+    try:
+        stream_stall_timeout = max(0, int(read_config_value(config, '录制设置', '直播流卡死超时(秒)', 90)))
+    except (TypeError, ValueError):
+        stream_stall_timeout = 90
     is_run_script = options.get(read_config_value(config, '录制设置', '是否录制完成后执行自定义脚本', "否"), False)
     custom_script = read_config_value(config, '录制设置', '自定义脚本执行命令', "") if is_run_script else None
     enable_proxy_platform = read_config_value(
