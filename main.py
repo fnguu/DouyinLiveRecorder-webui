@@ -687,6 +687,10 @@ def check_subprocess(record_name: str, record_url: str, ffmpeg_command: list, sa
     # 弹幕：与 ffmpeg 录制并行，录制结束时一起收尾。
     # 抖音走 webcast IM（protobuf），B站走自己的二进制协议，两条路互不影响。
     danmaku_key = None
+    # 分段录制时弹幕也跟着一段一份：把「第一段视频的预期路径」交给抓取器，
+    # 它盯这个目录就能知道每一段什么时候开始（文件名里带时间）
+    seg_recording = '%' in os.path.basename(str(save_file_path))
+    seg_video = dm_base if seg_recording else ''
     if ui_danmaku_ok(record_url):
         _formats = danmaku_formats_list()
         _anchor = record_name.split(' ', maxsplit=1)[-1]
@@ -704,6 +708,7 @@ def check_subprocess(record_name: str, record_url: str, ffmpeg_command: list, sa
                         'cookie': dy_cookie,
                         'formats': _formats,
                         'sync_start': _sync,
+                        'segment_video': seg_video,
                         **subtitle_style_kwargs(),
                     },
                     name=f'danmaku_{record_name}',
@@ -724,6 +729,7 @@ def check_subprocess(record_name: str, record_url: str, ffmpeg_command: list, sa
                         'cookie': bili_cookie,
                         'formats': _formats,
                         'sync_start': _sync,
+                        'segment_video': seg_video,
                         **subtitle_style_kwargs(),
                     },
                     name=f'bili_danmaku_{record_name}',
@@ -805,7 +811,8 @@ def check_subprocess(record_name: str, record_url: str, ffmpeg_command: list, sa
 
     # 弹幕必须先收尾：xml 的收尾标签和 ass 都是连接关闭时才落盘的
     stop_danmaku_by_key(danmaku_key)
-    if '%' in str(save_file_path) and dm_base:
+    # 分段录制时弹幕已经跟着一段一份命名了；只有整场一个文件的旧路径才需要事后对齐
+    if seg_recording and dm_base and not (danmaku_key and seg_video):
         dm_base = align_danmaku_with_video(str(save_file_path), dm_base)
     if return_code == 0:
         if converts_to_mp4 and save_type == 'TS':

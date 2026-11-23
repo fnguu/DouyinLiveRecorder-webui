@@ -27,7 +27,7 @@ import zlib
 from datetime import datetime
 from typing import Optional
 
-from .danmaku_store import XmlWriter
+from .danmaku_store import SegmentWriterMixin, XmlWriter
 from .logger import logger
 
 try:
@@ -277,7 +277,7 @@ def fetch_danmu_info(room_id: str) -> tuple:
 
 # ---------------------------------------------------------------------- 抓取器
 
-class BiliDanmakuRecorder:
+class BiliDanmakuRecorder(SegmentWriterMixin):
     """单个直播间的 B 站弹幕抓取器。"""
 
     def __init__(self, room_id: str, save_file_path: str, anchor_name: str = '',
@@ -291,7 +291,8 @@ class BiliDanmakuRecorder:
                  subtitle_scroll_duration: float = 12.0,
                  privilege_layout: str = 'corner', privilege_max: int = 0,
                  privilege_cap: float = 0.0, msg_duration: float = 0.0,
-                 msg_source: str = 'price', show_user: bool = True, uid: str = '0'):
+                 msg_source: str = 'price', show_user: bool = True, uid: str = '0',
+                 segment_video: str = ''):
         self.room_id = str(room_id)
         self.anchor_name = anchor_name or self.room_id
         self.cookie = cookie or ''
@@ -341,6 +342,8 @@ class BiliDanmakuRecorder:
         self._base_time: Optional[datetime] = None
         self._guard_seen: dict = {}
         self.count = 0
+        # 分段录制：video_hint 是第一段视频的预期路径，只用来盯目录切段
+        self.init_segment_mode(segment_video, sync_start)
 
     # ------------------------------------------------------------------ 对外
 
@@ -352,7 +355,7 @@ class BiliDanmakuRecorder:
             logger.warning('B站弹幕未启动：缺少 requests')
             return False
         os.makedirs(os.path.dirname(self.base_path) or '.', exist_ok=True)
-        if 'xml' in self.formats:
+        if 'xml' in self.formats and not self.segment_mode:
             self._xml = XmlWriter(self.xml_path, self.room_id, anchor_name=self.anchor_name,
                                   sections=('d', 'gift', 'sc', 'guard'), price_unit=PRICE_UNIT)
         self._stop_event.clear()
@@ -361,6 +364,7 @@ class BiliDanmakuRecorder:
         self._beat_thread = threading.Thread(target=self._heartbeat, name=f'bili_heartbeat_{self.room_id}',
                                              daemon=True)
         self._beat_thread.start()
+        self.start_segment_thread()
         logger.info(f'{self.anchor_name} B站弹幕抓取已启动（房间 {self.room_id}），保存至 {self.xml_path}')
         return True
 
@@ -373,11 +377,8 @@ class BiliDanmakuRecorder:
             pass
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=8)
-        self._flush(force=True)
-        if self._xml:
-            self._xml.close()
-            self._xml = None
-        self._write_ass()
+        # 收尾：写完最后一段（分段模式下每段各有一份 xml/ass）
+        self.finalize_segments()
         logger.info(f'{self.anchor_name} B站弹幕抓取已停止，共 {self.count} 条 -> {self.xml_path}')
 
     # ------------------------------------------------------------------ 连接
@@ -787,36 +788,27 @@ class BiliDanmakuRecorder:
                 self._flush(force=True)
 
     def _flush(self, force: bool = False) -> None:
-        if not self._buffer:
-            return
-        if self._xml is not None:
-            self._xml.append(self._buffer, fsync=force)
-        self._buffer.clear()
-        self._last_flush = time.time()
+        # 落盘逻辑在 SegmentWriterMixin：分段模式下按段归零时间轴
+        SegmentWriterMixin._flush(self, force)
 
-    def _write_ass(self) -> None:
-        if 'ass' not in self.formats:
+    def _open_xml_writer(self, stem: str):
+        """按分段开一个新的 XML（B 站四个板块齐全，金额单位金瓜子）。"""
+        return XmlWriter(f'{stem}.xml', self.room_id, anchor_name=self.anchor_name,
+                         sections=('d', 'gift', 'sc', 'guard'), price_unit=PRICE_UNIT)
+
+    def _render_segment_ass(self, records: list, stem: str = '') -> None:
+        """生成一段的 ASS 字幕。records 的时间轴已经相对本段起点。"""
+        if 'ass' not in self.formats or not records:
             return
         from .danmaku import probe_playres, render_ass  # 复用同一套 ASS 渲染，避免两份实现漂移
-        records = [r for r in self._records if str(r.get('type') or '').lower() in self.subtitle_types]
-        if not records:
-            return
-        records.sort(key=lambda r: r.get('offset', 0))
-        kept = []
-        for r in records:
-            if str(r.get('type') or '').lower() == 'gift' and self.gift_min_diamond > 0:
-                try:
-                    if float(r.get('diamond', 0) or 0) < self.gift_min_diamond:
-                        continue
-                except (TypeError, ValueError):
-                    pass
-            kept.append(r)
+        kept = [r for r in records if str(r.get('type') or '').lower() in self.subtitle_types]
         if not kept:
             return
+        ass_path = f'{stem}.ass' if stem else self.ass_path
         # PlayRes 以实际录像分辨率为准，取不到才退回构造时的值（默认 1920x1080）
-        playres = probe_playres(self.base_path) or self.playres
+        playres = probe_playres(stem or self.base_path) or self.playres
         written, dropped = render_ass(
-            kept, self.ass_path, self.subtitle_max_lines, self.subtitle_duration,
+            kept, ass_path, self.subtitle_max_lines, self.subtitle_duration,
             self.subtitle_mode, playres,
             font_size=self.subtitle_font_size,
             types=self.subtitle_types, gift_min_diamond=self.gift_min_diamond,
@@ -826,7 +818,7 @@ class BiliDanmakuRecorder:
             privilege_cap=self.privilege_cap, msg_duration=self.msg_duration,
             msg_source=self.msg_source, show_user=self.show_user,
         )
-        logger.debug(f'B站弹幕 ASS 已生成: {self.ass_path}（写入 {written} 条'
+        logger.debug(f'B站弹幕 ASS 已生成: {ass_path}（写入 {written} 条'
                      + (f'，丢弃 {dropped} 条' if dropped else '') + '）')
 
 

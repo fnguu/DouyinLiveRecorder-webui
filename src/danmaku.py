@@ -37,7 +37,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from .danmaku_store import XmlWriter
+from .danmaku_store import SegmentWriterMixin, XmlWriter
 from .logger import logger
 
 JS_SIGN_PATH = Path(__file__).resolve().parent / 'javascript' / 'douyin_ws_sign.js'
@@ -810,7 +810,7 @@ def clean_base_path(save_file_path: str) -> str:
     return base
 
 
-class DanmakuRecorder:
+class DanmakuRecorder(SegmentWriterMixin):
     """单个直播间的弹幕抓取器，运行在独立线程里。"""
 
     def __init__(self, room_id: str, save_file_path: str, anchor_name: str = '',
@@ -825,7 +825,8 @@ class DanmakuRecorder:
                  subtitle_scroll_duration: float = SCROLL_DURATION,
                  privilege_layout: str = 'corner', privilege_max: int = 0,
                  privilege_cap: float = 0.0, msg_duration: float = 0.0,
-                 msg_source: str = 'price', show_user: bool = True):
+                 msg_source: str = 'price', show_user: bool = True,
+                 segment_video: str = ''):
         self.room_id = str(room_id)
         self.anchor_name = anchor_name or self.room_id
         self.formats = [f.strip().lower() for f in formats if f.strip()] or ['xml', 'ass']
@@ -888,6 +889,8 @@ class DanmakuRecorder:
         self._thread: Optional[threading.Thread] = None
         self._heartbeat_thread: Optional[threading.Thread] = None
         self.count = 0
+        # 分段录制：video_hint 是第一段视频的预期路径，只用来盯目录切段
+        self.init_segment_mode(segment_video, sync_start)
 
     # ------------------------------------------------------------------ 对外接口
 
@@ -899,13 +902,14 @@ class DanmakuRecorder:
             logger.warning(f'弹幕抓取未启动：protobuf 模块未就绪 -> {_PB_IMPORT_ERROR}')
             return False
         os.makedirs(os.path.dirname(self.base_path) or '.', exist_ok=True)
-        if 'xml' in self.formats:
+        if 'xml' in self.formats and not self.segment_mode:
             # 抖音没有 SC/上舰，XML 头部样式不生成这两个板块
             self._xml = XmlWriter(self.xml_path, self.room_id, anchor_name=self.anchor_name,
                                   sections=('d', 'gift'))
         self._stop_event.clear()
         self._thread = threading.Thread(target=self._run, name=f'danmaku_{self.room_id}', daemon=True)
         self._thread.start()
+        self.start_segment_thread()
         target = self.xml_path if 'xml' in self.formats else self.ass_path
         logger.info(f'{self.anchor_name} 弹幕抓取已启动，保存至 {target}')
         return True
@@ -919,11 +923,8 @@ class DanmakuRecorder:
             pass
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=10)
-        self._flush(force=True)
-        if self._xml:
-            self._xml.close()
-            self._xml = None
-        self._write_subtitles()
+        # 收尾：写完最后一段（分段模式下每段各有一份 xml/ass）
+        self.finalize_segments()
         target = self.xml_path if 'xml' in self.formats else self.ass_path
         logger.info(f'{self.anchor_name} 弹幕抓取已停止，共 {self.count} 条 -> {target}')
 
@@ -1255,44 +1256,26 @@ class DanmakuRecorder:
             if len(self._buffer) >= 20 or now - self._last_flush >= 5:
                 self._flush(force=True)
 
-    def _flush(self, force: bool = False) -> None:
-        if not self._buffer:
-            return
-        if self._xml is not None:
-            self._xml.append(self._buffer, fsync=force)
-        self._buffer.clear()
-        self._last_flush = time.time()
-
     def _read_records(self) -> list[dict]:
         return list(self._records)
 
-    def _write_subtitles(self) -> None:
-        if 'ass' not in self.formats:
+    def _open_xml_writer(self, stem: str):
+        """按分段开一个新的 XML（抖音只有 d/gift 两个板块）。"""
+        return XmlWriter(f'{stem}.xml', self.room_id, anchor_name=self.anchor_name,
+                         sections=('d', 'gift'))
+
+    def _render_segment_ass(self, records: list[dict], stem: str = '') -> None:
+        """生成一段的 ASS 字幕。records 的时间轴已经相对本段起点。"""
+        if 'ass' not in self.formats or not records:
             return
-        records = [r for r in self._read_records() if str(r.get('type') or '').lower() in self.subtitle_types]
-        if not records:
-            return
-        records.sort(key=lambda r: r.get('offset', 0))
-        kept = []
-        for r in records:
-            if str(r.get('type') or '').lower() == 'gift' and self.gift_min_diamond > 0:
-                try:
-                    diamond = float(r.get('diamond', 0) or 0)
-                except (TypeError, ValueError):
-                    diamond = 0.0
-                if diamond < self.gift_min_diamond:
-                    continue
-            kept.append(r)
+        kept = [r for r in records if str(r.get('type') or '').lower() in self.subtitle_types]
         if not kept:
             return
-        self._write_ass(kept)
-
-    def _write_ass(self, records: list[dict]) -> None:
-        """生成 ASS 字幕。默认走滚动飘屏，多轨道并发，具体渲染见 render_ass。"""
+        ass_path = f'{stem}.ass' if stem else self.ass_path
         # PlayRes 以实际录像分辨率为准，取不到才退回构造时的值（默认 1920x1080）
-        playres = probe_playres(self.base_path) or self.playres
+        playres = probe_playres(stem or self.base_path) or self.playres
         written, dropped = render_ass(
-            records, self.ass_path, self.subtitle_max_lines, self.subtitle_duration,
+            kept, ass_path, self.subtitle_max_lines, self.subtitle_duration,
             self.subtitle_mode, playres,
             font_size=self.subtitle_font_size,
             types=self.subtitle_types, gift_min_diamond=self.gift_min_diamond,
@@ -1303,7 +1286,7 @@ class DanmakuRecorder:
             msg_source=self.msg_source, show_user=self.show_user,
         )
         logger.debug(
-            f'弹幕 ASS 字幕已生成: {self.ass_path}'
+            f'弹幕 ASS 字幕已生成: {ass_path}'
             f'(写入 {written} 条，'
             + ('飘屏滚动' if self.subtitle_mode == 'scroll' else '顶部固定')
             + (f'，最多 {self.subtitle_max_lines} 行' if self.subtitle_max_lines else '，按画面高度铺满')
@@ -1331,7 +1314,8 @@ def start_danmaku(room_id: str, save_file_path: str, anchor_name: str = '',
                   subtitle_scroll_duration: float = SCROLL_DURATION,
                   privilege_layout: str = 'corner', privilege_max: int = 0,
                   privilege_cap: float = 0.0, msg_duration: float = 0.0,
-                  msg_source: str = 'price', show_user: bool = True) -> bool:
+                  msg_source: str = 'price', show_user: bool = True,
+                  segment_video: str = '') -> bool:
     key = os.path.abspath(clean_base_path(save_file_path))
     with _sessions_lock:
         if key in _sessions:
@@ -1342,7 +1326,7 @@ def start_danmaku(room_id: str, save_file_path: str, anchor_name: str = '',
                                    subtitle_alpha, subtitle_outline, subtitle_shadow,
                                    subtitle_scroll_duration,
                                    privilege_layout, privilege_max, privilege_cap,
-                                   msg_duration, msg_source, show_user)
+                                   msg_duration, msg_source, show_user, segment_video)
         ok = recorder.start()
         if ok:
             _sessions[key] = recorder

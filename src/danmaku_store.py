@@ -37,9 +37,13 @@ XML 是边抓边写的：先写头部，每条弹幕立刻追加一行 `<d>`，�
 """
 import binascii
 import os
+import re
+import threading
 import time
-from datetime import datetime
-from typing import Iterable
+from datetime import datetime, timedelta
+from typing import Iterable, Optional
+
+from .logger import logger
 
 # 只有真正"有文字"的消息才进 <d>：进场/点赞这些是弹幕之外的附带信息，
 # 写进 XML 会被播放器当成奇怪的弹幕。
@@ -425,3 +429,256 @@ def write_xml(records: Iterable[dict], path: str, room_id='0', anchor_name='', s
     with XmlWriter(path, room_id, anchor_name, sections=sections) as w:
         w.append(records, fsync=True)
         return w.count
+
+
+# ---------------------------------------------------------------------- 分段录制
+# 分段录制时 ffmpeg 每切一段就写一个新文件，文件名里带这一段的开始时间
+# （-strftime 1），例如「兔娘_2026-11-23_17-27-57.mp4」。弹幕要跟着切，
+# 否则一段一小时的视频配一份整场的 xml/ass，字幕时间轴对不上。
+
+SEGMENT_TIME_FMT = '%Y-%m-%d_%H-%M-%S'
+_SEG_TIME_RE = re.compile(r'(\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2})')
+
+
+def parse_segment_time(name) -> Optional[datetime]:
+    """从文件名里取出这一段的开始时间；不是时间分段的就返回 None。"""
+    m = _SEG_TIME_RE.search(os.path.basename(str(name or '')))
+    if not m:
+        return None
+    try:
+        return datetime.strptime(m.group(1), SEGMENT_TIME_FMT)
+    except ValueError:
+        return None
+
+
+def segment_prefix(name) -> str:
+    """「主播_标题」前缀：去掉时间戳和扩展名，用来找同一次录制的所有分段。"""
+    base = os.path.basename(str(name or ''))
+    m = _SEG_TIME_RE.search(base)
+    return base[:m.start()] if m else ''
+
+
+class SegmentWatcher:
+    """盯录像目录，按顺序报告「又有哪一段视频开始了」。
+
+    只要视频文件名带时间戳，就能靠扫目录拿到边界，不需要和 ffmpeg 通信：
+    新文件出现的那一刻就是新的分段开始。目录里上一次录制留下的同名文件用
+    session_start 过滤掉，不会串到本场来。
+    """
+
+    def __init__(self, video_hint: str, session_start=None, interval: float = 1.0,
+                 slack: float = 20.0):
+        self.hint = str(video_hint or '')
+        self.folder = os.path.dirname(os.path.abspath(self.hint)) if self.hint else ''
+        self.prefix = segment_prefix(self.hint)
+        self.ext = os.path.splitext(self.hint)[1].lower()
+        self.session_start = session_start
+        self.interval = max(0.2, float(interval or 1.0))
+        # 允许比录制开始早一点点（时钟取整到秒）；只用来挡上一场留下的同名文件
+        self.slack = float(slack or 0)
+        self.seen = 0
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self.folder and self.prefix and self.ext and os.path.isdir(self.folder))
+
+    def scan(self) -> list:
+        """属于本次录制的分段，按开始时间升序：[(stem, start_dt), ...]。
+
+        stem 是去掉扩展名的完整路径，可以直接拼 .xml / .ass。
+        """
+        if not self.enabled:
+            return []
+        try:
+            names = os.listdir(self.folder)
+        except OSError:
+            return []
+        found = []
+        for name in names:
+            if not name.startswith(self.prefix) or not name.lower().endswith(self.ext):
+                continue
+            start_dt = parse_segment_time(name)
+            if start_dt is None:
+                continue
+            if self.session_start is not None and start_dt < self.session_start - timedelta(seconds=self.slack):
+                continue  # 上一场录制的残留
+            found.append((os.path.join(self.folder, os.path.splitext(name)[0]), start_dt))
+        found.sort(key=lambda item: item[1])
+        return found
+
+    def new_segments(self) -> list:
+        """自上次调用以来新出现的分段（第一次调用会返回已有的全部）。"""
+        items = self.scan()
+        fresh = items[self.seen:]
+        self.seen = len(items)
+        return fresh
+
+
+class SegmentWriterMixin:
+    """弹幕文件跟着视频分段走：一段视频一份 xml/ass，时间轴按段归零。
+
+    子类要提供三样东西，其余都在这里：
+
+    * ``_lock`` / ``_buffer`` / ``_records`` / ``_xml`` / ``formats`` /
+      ``base_path`` / ``ass_path`` / ``xml_path`` 这些属性
+    * ``_open_xml_writer(stem)``：按 stem 开一个新的 XmlWriter（各自决定 sections）
+    * ``_render_segment_ass(records, stem)``：把一段弹幕渲染成 ``<stem>.ass``
+
+    切段的时机由 SegmentWatcher 决定，误差在一个轮询间隔（默认 1 秒）以内：
+    边界前后一两秒的弹幕可能落到前一段，肉眼无感，但比整场一份字幕好用得多。
+    """
+
+    _seg_watcher: Optional[SegmentWatcher] = None
+    _seg_stem = ''
+    _seg_base = 0.0
+    _seg_thread: Optional[threading.Thread] = None
+
+    # ------------------------------------------------------------------ 生命周期
+
+    def init_segment_mode(self, video_hint: str = '', session_start=None) -> None:
+        """video_hint 是「第一段视频的预期路径」，只用它的目录/前缀/扩展名。
+
+        没给（或给的不是时间分段）就保持原来的单文件行为。
+        """
+        watcher = SegmentWatcher(video_hint, session_start) if video_hint else None
+        self._seg_watcher = watcher if (watcher and watcher.enabled) else None
+        self._seg_base = 0.0
+        self._seg_stem = ''
+        self._seg_thread = None
+
+    @property
+    def segment_mode(self) -> bool:
+        return self._seg_watcher is not None
+
+    def start_segment_thread(self) -> None:
+        if not self._seg_watcher or (self._seg_thread and self._seg_thread.is_alive()):
+            return
+        self._seg_thread = threading.Thread(
+            target=self._segment_loop,
+            name=f'segments_{getattr(self, "room_id", "")}',
+            daemon=True,
+        )
+        self._seg_thread.start()
+
+    # ------------------------------------------------------------------ 切段
+
+    def _segment_loop(self) -> None:
+        while not self._stop_event.is_set():
+            try:
+                fresh = self._seg_watcher.new_segments()
+            except Exception as exc:  # 目录读不了就下一轮再试，不影响抓弹幕
+                logger.debug(f'弹幕分段扫描失败: {exc}')
+                fresh = []
+            for stem, start_dt in fresh:
+                if self._stop_event.is_set():
+                    return  # 已经在收尾了，别再开新文件
+                try:
+                    self._switch_segment(stem, start_dt)
+                except Exception as exc:
+                    logger.warning(f'弹幕分段切换失败（{os.path.basename(stem)}）: {exc}')
+            self._stop_event.wait(self._seg_watcher.interval)
+
+    def _switch_segment(self, stem: str, start_dt) -> None:
+        """切到新的一段：收尾上一段的 xml/ass，再开新文件。"""
+        watcher = self._seg_watcher
+        target_xml = f'{stem}.xml'
+        if ('xml' in self.formats and os.path.abspath(target_xml) != os.path.abspath(self.xml_path)
+                and os.path.exists(target_xml) and os.path.getsize(target_xml) > 0):
+            # 同名前缀的旧文件（上一场、或卡死重连前那一段）不能覆盖，跳过这一段
+            logger.debug(f'弹幕分段跳过（目标已存在）: {os.path.basename(target_xml)}')
+            return
+        base = 0.0
+        if watcher is not None and watcher.session_start is not None and start_dt is not None:
+            base = max((start_dt - watcher.session_start).total_seconds(), 0.0)
+        with self._lock:
+            prev_stem, prev_base = self._seg_stem, self._seg_base
+            self._flush(force=True)          # 旧基准写完再换
+            if self._xml is not None:
+                self._xml.close()
+                self._xml = None
+            self._seg_stem = stem
+            self._seg_base = base
+            self.base_path = stem
+            self.xml_path = f'{stem}.xml'
+            self.ass_path = f'{stem}.ass'
+            if 'xml' in self.formats:
+                self._xml = self._open_xml_writer(stem)
+            rows = self._records_between(prev_base, base) if prev_stem else []
+        # 字幕渲染放到锁外：一小时的弹幕渲染要几十到几百毫秒，别卡住收包
+        if prev_stem and rows:
+            self._render_segment_ass(rows, prev_stem)
+        if prev_stem:
+            logger.debug(f'弹幕已切段：{os.path.basename(prev_stem)}（{len(rows)} 条）')
+        else:
+            logger.debug(f'弹幕按分段保存：{os.path.basename(stem)}')
+
+    # ------------------------------------------------------------------ 落盘
+
+    def _flush(self, force: bool = False) -> None:
+        """把缓冲区写进当前这一段。
+
+        分段模式下 offset 要减掉本段的起点；等第一段视频出现之前先攒着不写，
+        否则会多出一个「第 0 段」的孤儿文件。
+        """
+        if not self._buffer:
+            return
+        if self._xml is not None:
+            rows = self._rebased(self._buffer, self._seg_base)
+            self._xml.append(rows, fsync=force)
+            self._buffer.clear()
+        elif not ('xml' in self.formats and self._seg_watcher and not self._seg_stem):
+            self._buffer.clear()
+        self._last_flush = time.time()
+
+    @staticmethod
+    def _rebased(records: Iterable[dict], base: float) -> list:
+        """把一整场的绝对时间轴改成「相对本段开始」。"""
+        if not base:
+            return list(records)
+        rows = []
+        for r in records:
+            try:
+                off = float(r.get('offset') or 0) - base
+            except (TypeError, ValueError):
+                off = 0.0
+            rows.append({**r, 'offset': round(max(off, 0.0), 3)})
+        return rows
+
+    def _records_between(self, lo: float, hi: float) -> list:
+        """取 offset 落在 [lo, hi) 的消息，并改成相对 lo 的时间轴。"""
+        rows = []
+        for r in list(self._records):
+            try:
+                off = float(r.get('offset') or 0)
+            except (TypeError, ValueError):
+                off = 0.0
+            if off < lo or off >= hi:
+                continue
+            rows.append({**r, 'offset': round(max(off - lo, 0.0), 3)})
+        rows.sort(key=lambda item: item.get('offset', 0))
+        return rows
+
+    def finalize_segments(self) -> None:
+        """录制结束：收尾最后一段并生成它的 ass。
+
+        一段视频都没等到（ffmpeg 直接失败）就退回单文件，别把弹幕丢掉。
+        """
+        # 先等分段线程退出，避免它在我们收尾之后又开一个新文件
+        thread = self._seg_thread
+        if thread and thread.is_alive() and thread is not threading.current_thread():
+            try:
+                thread.join(timeout=5)
+            except Exception:
+                pass
+        with self._lock:
+            if self._xml is None and 'xml' in self.formats and not self._seg_stem:
+                self._xml = self._open_xml_writer(self.base_path)
+                self._seg_base = 0.0
+            self._flush(force=True)
+            if self._xml is not None:
+                self._xml.close()
+                self._xml = None
+            stem, base = self._seg_stem, self._seg_base
+        rows = self._records_between(base, float('inf'))
+        if rows:
+            self._render_segment_ass(rows, stem)
