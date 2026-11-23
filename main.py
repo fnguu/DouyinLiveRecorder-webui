@@ -342,8 +342,79 @@ def get_startup_info(system_type: str):
     return startup_info
 
 
+SEGMENT_TIME_FMT = '%Y-%m-%d_%H-%M-%S'
+
+
+def segment_template(full_path: str, anchor_name: str, title_in_name: str, ext: str) -> str:
+    """分段录制的输出模板：按「这一段的开始时间」命名（配合 ffmpeg 的 -strftime 1）。
+
+    例：Borusushi狩司司_2026-11-23_17-27-57.mp4，一小时后自动变成
+    Borusushi狩司司_2026-11-23_18-27-57.mp4，不再出现 _000/_001 这种序号。
+    """
+    return f"{full_path}/{anchor_name}_{title_in_name}%Y-%m-%d_%H-%M-%S.{ext}"
+
+
+def segment_prefix(video_path: str) -> str:
+    """从分段模板/文件名里取出「主播_标题」前缀，用于找出同一次录制的所有分段。"""
+    base = os.path.basename(str(video_path))
+    return base.split('%Y-%m-%d', 1)[0]
+
+
+def align_danmaku_with_video(video_template: str, danmaku_base: str) -> str:
+    """把弹幕文件改成和「第一段视频」同名。
+
+    -strftime 的时间取自 ffmpeg 段落盘那一刻，可能和脚本记下的 now 差一两秒；
+    录完对一次名字，保证 xxx.mp4 / xxx.xml / xxx.ass 前缀完全一致。
+    """
+    try:
+        folder = os.path.dirname(video_template) or '.'
+        prefix = segment_prefix(video_template)
+        ext = os.path.splitext(video_template)[1]
+        if not prefix or not os.path.isdir(folder):
+            return danmaku_base
+        names = sorted(n for n in os.listdir(folder)
+                       if n.startswith(prefix) and n.lower().endswith(ext.lower()))
+        if not names:
+            return danmaku_base
+        first_base = os.path.join(folder, os.path.splitext(names[0])[0])
+        if os.path.abspath(first_base) == os.path.abspath(danmaku_base):
+            return danmaku_base
+        for suffix in ('.xml', '.ass'):
+            src = danmaku_base + suffix
+            if os.path.exists(src):
+                try:
+                    os.replace(src, first_base + suffix)
+                except OSError:
+                    pass
+        logger.debug(f'弹幕文件已对齐第一段视频: {os.path.basename(first_base)}')
+        return first_base
+    except Exception as exc:
+        logger.debug(f'弹幕文件改名失败（不影响录制）: {exc}')
+        return danmaku_base
+
+
+def rename_segments_by_time(template_path: str, start_time: str, segment_time) -> None:
+    """把 ffmpeg 写出的 _000/_001 分段改名为每段的开始时间（后处理转码时用）。"""
+    try:
+        folder = os.path.dirname(template_path) or '.'
+        base = os.path.basename(template_path)
+        prefix, _, ext = base.partition('%03d')
+        start = datetime.datetime.strptime(start_time, SEGMENT_TIME_FMT)
+        seconds = int(float(str(segment_time).split('.')[0] or 0))
+        for name in sorted(os.listdir(folder)):
+            if not (name.startswith(prefix) and name.endswith(ext)):
+                continue
+            index = name[len(prefix):len(name) - len(ext)]
+            if not index.isdigit():
+                continue
+            stamp = (start + datetime.timedelta(seconds=int(index) * seconds)).strftime(SEGMENT_TIME_FMT)
+            os.replace(os.path.join(folder, name), os.path.join(folder, f'{prefix}{stamp}{ext}'))
+    except Exception as exc:
+        logger.error(f'分段改名失败: {exc}')
+
+
 def segment_video(converts_file_path: str, segment_save_file_path: str, segment_format: str, segment_time: str,
-                  is_original_delete: bool = True) -> None:
+                  is_original_delete: bool = True, start_time: str | None = None) -> None:
     try:
         if os.path.exists(converts_file_path) and os.path.getsize(converts_file_path) > 0:
             ffmpeg_command = [
@@ -362,6 +433,8 @@ def segment_video(converts_file_path: str, segment_save_file_path: str, segment_
             _output = subprocess.check_output(
                 ffmpeg_command, stderr=subprocess.STDOUT, startupinfo=get_startup_info(os_type)
             )
+            if start_time:
+                rename_segments_by_time(segment_save_file_path, start_time, segment_time)
             if is_original_delete:
                 time.sleep(1)
                 if os.path.exists(converts_file_path):
@@ -603,8 +676,11 @@ def ffmpeg_quit(process) -> None:
 
 
 def check_subprocess(record_name: str, record_url: str, ffmpeg_command: list, save_type: str,
-                     script_command: str | None = None) -> bool:
+                     script_command: str | None = None, danmaku_base: str | None = None) -> bool:
     save_file_path = ffmpeg_command[-1]
+    # 分段录制时输出是 xxx%Y-%m-%d_%H-%M-%S.mp4 这样的模板，弹幕文件得用「本段开始时间」
+    # 那个真实前缀，调用方会把它作为 danmaku_base 传进来
+    dm_base = str(danmaku_base or save_file_path)
     ui_mark(record_url, status='recording', name=record_name,
             file=os.path.basename(str(save_file_path)))
 
@@ -618,7 +694,7 @@ def check_subprocess(record_name: str, record_url: str, ffmpeg_command: list, sa
         if danmaku_enabled and 'douyin.com' in record_url:
             _room_id = danmaku_room_ids.get(record_url)
             if _room_id:
-                danmaku_key = str(save_file_path)
+                danmaku_key = dm_base
                 threading.Thread(
                     target=danmaku.start_danmaku,
                     kwargs={
@@ -638,7 +714,7 @@ def check_subprocess(record_name: str, record_url: str, ffmpeg_command: list, sa
         elif bili_danmaku_enabled and 'bilibili.com' in record_url:
             _m = re.search(r'bilibili\.com/(?:blanc/)?(\d+)', record_url)
             if _m:
-                danmaku_key = str(save_file_path)
+                danmaku_key = dm_base
                 threading.Thread(
                     target=danmaku_bili.start_danmaku,
                     kwargs={
@@ -677,7 +753,13 @@ def check_subprocess(record_name: str, record_url: str, ffmpeg_command: list, sa
     last_grow = time.time()
     stalled = False
     watch_file = str(save_file_path)
-    if '%' in watch_file:      # 分段录制的模板路径（xxx_%03d.ts）没法直接 stat
+    watch_dir = watch_prefix = watch_ext = ''
+    if '%' in watch_file:
+        # 分段录制的输出是模板（xxx%Y-%m-%d_%H-%M-%S.mp4），没法直接 stat，
+        # 改成盯目录里「当前最新的那一段」
+        watch_dir = os.path.dirname(watch_file) or '.'
+        watch_prefix = segment_prefix(watch_file)
+        watch_ext = os.path.splitext(watch_file)[1].lower()
         watch_file = ''
 
     while process.poll() is None:
@@ -689,9 +771,20 @@ def check_subprocess(record_name: str, record_url: str, ffmpeg_command: list, sa
             ui_unmark(record_url)
             return True
         time.sleep(1)
-        if stream_stall_timeout > 0 and watch_file:
+        if stream_stall_timeout > 0 and (watch_file or watch_dir):
+            target = watch_file
+            if not target and watch_dir:
+                try:
+                    names = [n for n in os.listdir(watch_dir)
+                             if n.startswith(watch_prefix) and n.lower().endswith(watch_ext)]
+                    if names:
+                        target = os.path.join(watch_dir, max(names))
+                except OSError:
+                    target = ''
+            if not target:
+                continue
             try:
-                size = os.path.getsize(watch_file)
+                size = os.path.getsize(target)
             except OSError:
                 size = last_size
             if size != last_size:
@@ -712,11 +805,13 @@ def check_subprocess(record_name: str, record_url: str, ffmpeg_command: list, sa
 
     # 弹幕必须先收尾：xml 的收尾标签和 ass 都是连接关闭时才落盘的
     stop_danmaku_by_key(danmaku_key)
+    if '%' in str(save_file_path) and dm_base:
+        dm_base = align_danmaku_with_video(str(save_file_path), dm_base)
     if return_code == 0:
         if converts_to_mp4 and save_type == 'TS':
             if split_video_by_time:
                 file_paths = utils.get_file_paths(os.path.dirname(save_file_path))
-                prefix = os.path.basename(save_file_path).rsplit('_', maxsplit=1)[0]
+                prefix = segment_prefix(save_file_path)
                 for path in file_paths:
                     if prefix in path:
                         threading.Thread(target=converts_mp4, args=(path, delete_origin_file)).start()
@@ -879,6 +974,7 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
             while True:
                 try:
                     port_info = []
+                    dm_base = None      # 本段视频的前缀（分段时用来给弹幕文件命名）
                     if record_url.find("douyin.com/") > -1:
                         platform = '抖音直播'
                         with semaphore:
@@ -1584,11 +1680,15 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
 
                                 if only_audio_record or any(i in record_save_type for i in ['MP3', 'M4A']):
                                     try:
-                                        now = time.strftime("%Y-%m-%d_%H-%M-%S", time.localtime())
+                                        now = time.strftime(SEGMENT_TIME_FMT, time.localtime())
                                         extension = "mp3" if "m4a" not in record_save_type.lower() else "m4a"
-                                        name_format = "_%03d" if split_video_by_time else ""
-                                        save_file_path = (f"{full_path}/{anchor_name}_{title_in_name}{now}"
-                                                          f"{name_format}.{extension}")
+                                        if split_video_by_time:
+                                            save_file_path = segment_template(
+                                                full_path, anchor_name, title_in_name, extension)
+                                            dm_base = f"{full_path}/{anchor_name}_{title_in_name}{now}.{extension}"
+                                        else:
+                                            save_file_path = (f"{full_path}/{anchor_name}_{title_in_name}{now}"
+                                                              f".{extension}")
 
                                         if split_video_by_time:
                                             print(f'\r{anchor_name} 准备开始录制音频: {save_file_path}')
@@ -1600,6 +1700,7 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
                                                     "-ab", "320k",
                                                     "-f", "segment",
                                                     "-segment_time", split_time,
+                                                    "-strftime", "1",
                                                     "-reset_timestamps", "1",
                                                     save_file_path,
                                                 ]
@@ -1611,6 +1712,7 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
                                                     "-ab", "320k",
                                                     "-f", "segment",
                                                     "-segment_time", split_time,
+                                                    "-strftime", "1",
                                                     "-segment_format", 'mpegts',
                                                     "-reset_timestamps", "1",
                                                     save_file_path,
@@ -1641,7 +1743,8 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
                                             record_url,
                                             ffmpeg_command,
                                             record_save_type,
-                                            custom_script
+                                            custom_script,
+                                            danmaku_base=dm_base
                                         )
                                         if comment_end:
                                             return
@@ -1703,8 +1806,10 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
 
                                     try:
                                         if split_video_by_time:
-                                            now = time.strftime("%Y-%m-%d_%H-%M-%S", time.localtime())
-                                            save_file_path = f"{full_path}/{anchor_name}_{title_in_name}{now}_%03d.flv"
+                                            now = time.strftime(SEGMENT_TIME_FMT, time.localtime())
+                                            save_file_path = segment_template(
+                                                full_path, anchor_name, title_in_name, 'flv')
+                                            dm_base = f"{full_path}/{anchor_name}_{title_in_name}{now}.flv"
                                             command = [
                                                 "-map", "0",
                                                 "-c:v", "copy",
@@ -1712,6 +1817,7 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
                                                 "-bsf:a", "aac_adtstoasc",
                                                 "-f", "segment",
                                                 "-segment_time", split_time,
+                                                "-strftime", "1",
                                                 "-segment_format", "flv",
                                                 "-reset_timestamps", "1",
                                                 save_file_path
@@ -1733,7 +1839,8 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
                                             record_url,
                                             ffmpeg_command,
                                             record_save_type,
-                                            custom_script
+                                            custom_script,
+                                            danmaku_base=dm_base
                                         )
                                         if comment_end:
                                             return
@@ -1746,12 +1853,13 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
 
                                     try:
                                         if converts_to_mp4:
-                                            seg_file_path = f"{full_path}/{anchor_name}_{title_in_name}{now}_%03d.mp4"
+                                            seg_file_path = f"{full_path}/{anchor_name}_{title_in_name}%03d.mp4"
                                             if split_video_by_time:
                                                 segment_video(
                                                     save_file_path, seg_file_path,
                                                     segment_format='mp4', segment_time=split_time,
-                                                    is_original_delete=delete_origin_file
+                                                    is_original_delete=delete_origin_file,
+                                                    start_time=now,
                                                 )
                                             else:
                                                 threading.Thread(
@@ -1760,12 +1868,13 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
                                                 ).start()
 
                                         else:
-                                            seg_file_path = f"{full_path}/{anchor_name}_{title_in_name}{now}_%03d.flv"
+                                            seg_file_path = f"{full_path}/{anchor_name}_{title_in_name}%03d.flv"
                                             if split_video_by_time:
                                                 segment_video(
                                                     save_file_path, seg_file_path,
                                                     segment_format='flv', segment_time=split_time,
-                                                    is_original_delete=delete_origin_file
+                                                    is_original_delete=delete_origin_file,
+                                                    start_time=now,
                                                 )
                                     except Exception as e:
                                         logger.error(f"转码失败: {e} ")
@@ -1777,8 +1886,10 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
 
                                     try:
                                         if split_video_by_time:
-                                            now = time.strftime("%Y-%m-%d_%H-%M-%S", time.localtime())
-                                            save_file_path = f"{full_path}/{anchor_name}_{title_in_name}{now}_%03d.mkv"
+                                            now = time.strftime(SEGMENT_TIME_FMT, time.localtime())
+                                            save_file_path = segment_template(
+                                                full_path, anchor_name, title_in_name, 'mkv')
+                                            dm_base = f"{full_path}/{anchor_name}_{title_in_name}{now}.mkv"
                                             command = [
                                                 "-flags", "global_header",
                                                 "-c:v", "copy",
@@ -1786,6 +1897,7 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
                                                 "-map", "0",
                                                 "-f", "segment",
                                                 "-segment_time", split_time,
+                                                "-strftime", "1",
                                                 "-segment_format", "matroska",
                                                 "-reset_timestamps", "1",
                                                 save_file_path,
@@ -1807,7 +1919,8 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
                                             record_url,
                                             ffmpeg_command,
                                             record_save_type,
-                                            custom_script
+                                            custom_script,
+                                            danmaku_base=dm_base
                                         )
                                         if comment_end:
                                             return
@@ -1825,14 +1938,17 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
 
                                     try:
                                         if split_video_by_time:
-                                            now = time.strftime("%Y-%m-%d_%H-%M-%S", time.localtime())
-                                            save_file_path = f"{full_path}/{anchor_name}_{title_in_name}{now}_%03d.mp4"
+                                            now = time.strftime(SEGMENT_TIME_FMT, time.localtime())
+                                            save_file_path = segment_template(
+                                                full_path, anchor_name, title_in_name, 'mp4')
+                                            dm_base = f"{full_path}/{anchor_name}_{title_in_name}{now}.mp4"
                                             command = [
                                                 "-c:v", "copy",
                                                 "-c:a", "aac",
                                                 "-map", "0",
                                                 "-f", "segment",
                                                 "-segment_time", split_time,
+                                                "-strftime", "1",
                                                 "-segment_format", "mp4",
                                                 "-reset_timestamps", "1",
                                                 "-movflags", "+frag_keyframe+empty_moov",
@@ -1854,7 +1970,8 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
                                             record_url,
                                             ffmpeg_command,
                                             record_save_type,
-                                            custom_script
+                                            custom_script,
+                                            danmaku_base=dm_base
                                         )
                                         if comment_end:
                                             return
@@ -1872,13 +1989,16 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
                                         print(f'{rec_info}/{filename}')
 
                                         try:
-                                            save_file_path = f"{full_path}/{anchor_name}_{title_in_name}{now}_%03d.ts"
+                                            save_file_path = segment_template(
+                                                full_path, anchor_name, title_in_name, 'ts')
+                                            dm_base = f"{full_path}/{anchor_name}_{title_in_name}{now}.ts"
                                             command = [
                                                 "-c:v", "copy",
                                                 "-c:a", "copy",
                                                 "-map", "0",
                                                 "-f", "segment",
                                                 "-segment_time", split_time,
+                                                "-strftime", "1",
                                                 "-segment_format", 'mpegts',
                                                 "-reset_timestamps", "1",
                                                 save_file_path,
@@ -1890,12 +2010,13 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
                                                 record_url,
                                                 ffmpeg_command,
                                                 record_save_type,
-                                                custom_script
+                                                custom_script,
+                                                danmaku_base=dm_base
                                             )
                                             if comment_end:
                                                 if converts_to_mp4:
                                                     file_paths = utils.get_file_paths(os.path.dirname(save_file_path))
-                                                    prefix = os.path.basename(save_file_path).rsplit('_', maxsplit=1)[0]
+                                                    prefix = segment_prefix(save_file_path)
                                                     for path in file_paths:
                                                         if prefix in path:
                                                             try:
@@ -1934,7 +2055,8 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
                                                 record_url,
                                                 ffmpeg_command,
                                                 record_save_type,
-                                                custom_script
+                                                custom_script,
+                                                danmaku_base=dm_base
                                             )
                                             if comment_end:
                                                 threading.Thread(

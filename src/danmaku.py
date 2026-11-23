@@ -804,7 +804,8 @@ def clean_base_path(save_file_path: str) -> str:
     处理分段录制时的 xxx_%03d.ts 这类模板路径。
     """
     base = str(save_file_path)
-    base = re.sub(r'_%0\d+d', '', base)          # 去掉分段占位符
+    base = re.sub(r'_%0\d+d', '', base)          # 去掉 _000 这类序号占位符
+    base = re.sub(r'%Y-%m-%d_%H-%M-%S', '', base)  # 去掉按时间分段的模板占位符
     base = re.sub(r'\.[A-Za-z0-9]+$', '', base)  # 去掉扩展名
     return base
 
@@ -870,8 +871,9 @@ class DanmakuRecorder:
         self.show_user = bool(show_user)
         self.base_path = clean_base_path(save_file_path)
 
-        self.xml_path = f'{self.base_path}.danmaku.xml'
-        self.ass_path = f'{self.base_path}.danmaku.ass'
+        # 弹幕文件与视频同名，只换扩展名：xxx.mp4 / xxx.xml / xxx.ass
+        self.xml_path = f'{self.base_path}.xml'
+        self.ass_path = f'{self.base_path}.ass'
 
         self._stop_event = threading.Event()
         self._ws_host = WS_HOSTS[0]

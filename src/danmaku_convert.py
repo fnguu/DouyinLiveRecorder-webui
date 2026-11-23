@@ -15,14 +15,21 @@ from .danmaku import (FIXED_DURATION, SCROLL_DURATION, SUBTITLE_ALPHA, SUBTITLE_
                       SUBTITLE_OUTLINE, SUBTITLE_SHADOW, probe_playres, render_ass)
 
 DEFAULT_RESOLUTION = (1920, 1080)
-XML_SUFFIX = '.danmaku.xml'
-ASS_SUFFIX = '.danmaku.ass'
+# 新命名：弹幕与视频同名（xxx.mp4 / xxx.xml / xxx.ass）
+XML_SUFFIX = '.xml'
+ASS_SUFFIX = '.ass'
+# 老文件是 xxx.danmaku.xml / xxx.danmaku.ass，读取时要继续认
+LEGACY_XML_SUFFIX = '.danmaku.xml'
+LEGACY_ASS_SUFFIX = '.danmaku.ass'
 
 
 def ass_path_for(xml_path: str) -> str:
+    """XML 对应的 ASS 路径：老文件保持老名字，新文件只换扩展名。"""
+    if xml_path.endswith(LEGACY_XML_SUFFIX):
+        return xml_path[:-len(LEGACY_XML_SUFFIX)] + LEGACY_ASS_SUFFIX
     if xml_path.endswith(XML_SUFFIX):
         return xml_path[:-len(XML_SUFFIX)] + ASS_SUFFIX
-    return xml_path + '.ass'
+    return xml_path + ASS_SUFFIX
 
 
 def is_finished(xml_path: str) -> bool:
@@ -168,6 +175,7 @@ def find_xml_files(root: str) -> list:
     found = []
     for dirpath, _dirs, names in os.walk(root):
         for name in sorted(names):
-            if name.endswith(XML_SUFFIX):
+            # .xml 同时覆盖新的 xxx.xml 和旧的 xxx.danmaku.xml
+            if name.lower().endswith(XML_SUFFIX):
                 found.append(os.path.join(dirpath, name))
     return found

@@ -10,9 +10,9 @@ WebUI 的「系统状态 → 字幕转换」用的是同一套核心（src/danma
 参数也能在「全局设置 → 弹幕字幕」里改。
 
 用法：
-    python tools/xml_to_ass.py ./downloads/B站直播/某主播/xxx.danmaku.xml
+    python tools/xml_to_ass.py ./downloads/B站直播/某主播/xxx.xml
     python tools/xml_to_ass.py ./downloads/B站直播 --overwrite
-    python tools/xml_to_ass.py xxx.danmaku.xml --resolution 2560x1440
+    python tools/xml_to_ass.py xxx.xml --resolution 2560x1440
 """
 import argparse
 import os
@@ -39,7 +39,7 @@ def parse_resolution(text):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description='弹幕 XML 转 ASS（对齐 DanmakuFactory 默认预设）')
-    parser.add_argument('paths', nargs='+', help='XML 文件或目录（递归找 *.danmaku.xml）')
+    parser.add_argument('paths', nargs='+', help='XML 文件或目录（递归找 *.xml，兼容 *.danmaku.xml）')
     parser.add_argument('--overwrite', action='store_true', help='覆盖已存在的 .ass')
     parser.add_argument('--resolution', type=parse_resolution,
                         help='强制指定分辨率（默认用 ffprobe 读同目录视频，读不到用 1920x1080）')
@@ -77,7 +77,7 @@ def main(argv=None):
         else:
             print(f'跳过不存在的路径: {item}')
     if not files:
-        print('没有找到 .danmaku.xml 文件')
+        print('没有找到弹幕 XML 文件')
         return 1
 
     kwargs = dict(duration=args.fixed_seconds, mode='fixed' if args.fixed else 'scroll',

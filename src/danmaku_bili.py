@@ -12,7 +12,7 @@
    要递归拆；ver=0 才是明文 JSON
 6. 每 30 秒发一次 op=2 心跳，服务端回 op=3（人气值）
 
-输出与抖音一致：`.danmaku.xml`（B 站弹幕格式，边抓边写）+ `.danmaku.ass`（收尾生成）。
+输出与抖音一致：`.xml`（B 站弹幕格式，边抓边写）+ `.ass`（收尾生成），与视频同名。
 """
 import base64
 import hashlib
@@ -325,8 +325,9 @@ class BiliDanmakuRecorder:
         self.uid = str(uid or '0')
 
         self.base_path = _clean_base(save_file_path)
-        self.xml_path = f'{self.base_path}.danmaku.xml'
-        self.ass_path = f'{self.base_path}.danmaku.ass'
+        # 与视频同名，只换扩展名：xxx.mp4 / xxx.xml / xxx.ass
+        self.xml_path = f'{self.base_path}.xml'
+        self.ass_path = f'{self.base_path}.ass'
 
         self._stop_event = threading.Event()
         self._thread: Optional[threading.Thread] = None

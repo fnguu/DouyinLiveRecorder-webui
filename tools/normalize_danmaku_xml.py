@@ -18,7 +18,7 @@
 
 用法：
     python tools/normalize_danmaku_xml.py L:/dlrw/downloads/B站直播
-    python tools/normalize_danmaku_xml.py 某文件.danmaku.xml --apply
+    python tools/normalize_danmaku_xml.py 某文件.xml --apply
     python tools/normalize_danmaku_xml.py <目录> --apply --no-backup --no-dedupe-guard
 """
 import argparse
@@ -223,7 +223,7 @@ def collect(paths):
         if os.path.isdir(item):
             for root, _dirs, names in os.walk(item):
                 for name in sorted(names):
-                    if name.endswith('.danmaku.xml'):
+                    if name.lower().endswith('.xml'):   # 新命名 xxx.xml，老命名 xxx.danmaku.xml
                         files.append(os.path.join(root, name))
         elif os.path.isfile(item):
             files.append(item)
@@ -372,7 +372,7 @@ def repair_file(path: str, conv: 'Converter', apply: bool = False, force: bool =
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description='把 B 站弹幕 XML 的金额统一成金瓜子')
-    parser.add_argument('paths', nargs='+', help='文件或目录（目录会递归找 *.danmaku.xml）')
+    parser.add_argument('paths', nargs='+', help='文件或目录（目录会递归找 *.xml，兼容老的 *.danmaku.xml）')
     parser.add_argument('--apply', action='store_true', help='真正写回文件（默认只打印计划）')
     parser.add_argument('--no-backup', action='store_true', help='写回时不生成 .bak')
     parser.add_argument('--no-dedupe-guard', action='store_true', help='不合并重复的上舰记录')
@@ -384,7 +384,7 @@ def main(argv=None):
 
     files = collect(args.paths)
     if not files:
-        print('没有找到 .danmaku.xml 文件')
+        print('没有找到弹幕 XML 文件')
         return 1
 
     conv = Converter(dedupe_guard=not args.no_dedupe_guard, fix_gift=not args.no_fix_gift)
