@@ -2283,6 +2283,25 @@ def save_config_value_in_place(section: str, option: str, value: str) -> None:
             logger.error(f'写入配置项失败: {err}')
 
 
+def read_max_lines_setting(config_parser: configparser.RawConfigParser) -> int:
+    """弹幕字幕同屏行数。
+
+    老版本这个键叫 `弹幕字幕同屏行数(0=自动)`——键名里带等号，configparser 会从
+    第一个等号切开：键成 `弹幕字幕同屏行数(0`、值成 `自动) = 5`，所以按原名永远读
+    不到（一直落到默认值 0）。现在键名去掉了等号，老配置也兼容着读。
+    """
+    for option in ('弹幕字幕同屏行数', '弹幕字幕同屏行数(0'):
+        try:
+            config_parser.read(config_file, encoding=text_encoding)
+            raw = config_parser.get('录制设置', option)
+        except (configparser.NoSectionError, configparser.NoOptionError):
+            continue
+        match = re.search(r'(\d+)\s*$', str(raw))
+        if match:
+            return int(match.group(1))
+    return 0
+
+
 def read_config_value(config_parser: configparser.RawConfigParser, section: str, option: str, default_value: Any) \
         -> Any:
     try:
@@ -2422,7 +2441,7 @@ while True:
     except (TypeError, ValueError):
         subtitle_fixed_duration = 5.0
     try:
-        subtitle_max_lines = max(0, int(read_config_value(config, '录制设置', '弹幕字幕同屏行数(0=自动)', 0)))
+        subtitle_max_lines = max(0, read_max_lines_setting(config))
     except (TypeError, ValueError):
         subtitle_max_lines = 0
     subtitle_mode = '固定' if str(read_config_value(

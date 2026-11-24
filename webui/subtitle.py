@@ -8,6 +8,7 @@
 正在录制、没有 `</i>` 收尾的文件会被跳过，避免生成半截字幕，也避免跟录制进程抢写。
 """
 import os
+import re
 import sys
 import threading
 import time
@@ -34,6 +35,20 @@ def download_root() -> str:
     return save_path or DEFAULT_DOWNLOAD_DIR
 
 
+def max_lines_from_ini(ini: dict) -> int:
+    """同屏行数。
+
+    老配置里的键名是 `弹幕字幕同屏行数(0=自动)`，等号会被 INI 解析器切开——
+    键成了 `弹幕字幕同屏行数(0`、值成了 `自动) = 5`。迁移脚本会把它改成新键名，
+    这里连半截的老键一起认，免得还没迁移的文件读不到。
+    """
+    raw = ini.get('弹幕字幕同屏行数')
+    if raw is None:
+        raw = ini.get('弹幕字幕同屏行数(0')
+    m = re.search(r'(\d+)\s*$', str(raw if raw is not None else ''))
+    return int(m.group(1)) if m else 0
+
+
 def style_from_config() -> dict:
     """config.ini 的「弹幕字幕」参数 -> render_ass 的关键字参数。"""
     ini = read_ini().get('录制设置', {})
@@ -53,7 +68,9 @@ def style_from_config() -> dict:
         'shadow': int(max(0, num('弹幕字幕阴影大小', 1))),
         'scroll_duration': max(1.0, num('滚动弹幕通过时间(秒)', 12)),
         'duration': max(1.0, num('固定弹幕停留时间(秒)', 5)),
-        'max_lines': int(max(0, num('弹幕字幕同屏行数(0=自动)', 0))),
+        # 老配置里的键名是 `弹幕字幕同屏行数(0=自动)`，含等号会被 INI 解析成半截键，
+        # 迁移脚本会改成现在这个名字，max_lines_from_ini 同时认老的半截键
+        'max_lines': max(0, max_lines_from_ini(ini)),
         'mode': 'fixed' if mode == '固定' else 'scroll',
         'privilege_layout': str(ini.get('礼物弹幕显示方式(左下角/滚动/关闭)', '左下角')).strip() or '左下角',
         'privilege_max': int(max(0, num('礼物弹幕最多条数', 0))),

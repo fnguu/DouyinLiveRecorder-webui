@@ -17,6 +17,7 @@
 其余自定义项一律不动。
 """
 import os
+import re
 
 from .paths import CONFIG_FILE
 
@@ -102,4 +103,87 @@ def repair_case_keys(path: str | None = None) -> list:
         _write_lines(target, lines, nl, trailing)
     except OSError:
         return []
+    return actions
+
+
+# 键名里带等号的老配置项 -> 现在用的键名。
+# INI 从第一个等号切开，`弹幕字幕同屏行数(0=自动) = 5` 会被读成
+# 键 `弹幕字幕同屏行数(0`、值 `自动) = 5`，于是：
+#   * WebUI 里按原名找不到 → 当成「未知配置项」又多显示一行；
+#   * 保存时按原名写不回去 → 每次保存都当成新键追加一行。
+# 实测一个用户的 config.ini 被这样撑到 4.7 万行，值永远是 0。
+LEGACY_EQUAL_KEYS = {
+    '弹幕字幕同屏行数(0=自动)': '弹幕字幕同屏行数',
+}
+_NUM_TAIL_RE = re.compile(r'=\s*(-?\d+(?:\.\d+)?)\s*$')
+
+
+def repair_equal_sign_keys(path: str | None = None) -> list:
+    """把「键名带等号」的老配置项改成新键名，并把重复的行合并成一条。"""
+    from .config_io import dedupe_lines
+
+    target = path or CONFIG_FILE
+    if not os.path.isfile(target):
+        return []
+    try:
+        lines, nl, trailing = _read_lines(target)
+    except OSError:
+        return []
+
+    section = None
+    hits = {}
+    for idx, line in enumerate(lines):
+        s = line.strip()
+        if s.startswith('[') and s.endswith(']'):
+            section = s[1:-1]
+            continue
+        if not section or not s or s.startswith(('#', ';')) or '=' not in s:
+            continue
+        key = s.rsplit(' = ', 1)[0].strip() if ' = ' in s else s.split('=', 1)[0].strip()
+        want = LEGACY_EQUAL_KEYS.get(key)
+        if not want:
+            continue
+        m = _NUM_TAIL_RE.search(s)
+        value = m.group(1) if m else s.rsplit('=', 1)[-1].strip()
+        item = hits.setdefault((section, want), {'first': idx, 'values': [], 'lines': []})
+        item['values'].append(value)
+        item['lines'].append(idx)
+
+    if not hits:
+        return []
+
+    drop = set()
+    actions = []
+    for (sec, want), item in hits.items():
+        values = [v for v in item['values'] if v != '']
+        # 0 是这一项的默认值（=自动），历史上每次保存都把界面上的 0 又追加一遍；
+        # 非零值只可能来自用户手动设置，所以优先保留最后一个非零值
+        value = values[-1] if values else '0'
+        for v in reversed(values):
+            if v not in ('0', '0.0'):
+                value = v
+                break
+        lines[item['first']] = f'{want} = {value}'
+        drop.update(idx for idx in item['lines'] if idx != item['first'])
+        actions.append({'section': sec, 'renamed': f'{want}（合并 {len(item["values"])} 行）', 'to': value})
+
+    lines = [line for i, line in enumerate(lines) if i not in drop]
+    lines, merged = dedupe_lines(lines)
+    if merged:
+        actions.append({'section': '全部', 'renamed': f'重复键合并 {merged} 行', 'to': ''})
+    try:
+        _write_lines(target, lines, nl, trailing)
+    except OSError:
+        return []
+    return actions
+
+
+def repair_config(path: str | None = None) -> list:
+    """启动时跑的全部配置修复：大小写变体 + 键名带等号 + 重复键。"""
+    actions = []
+    for step in (repair_case_keys, repair_equal_sign_keys):
+        try:
+            actions.extend(step(path))
+        except Exception as exc:  # pragma: no cover - 修复失败不能挡住启动
+            print(f'[webui] {step.__name__} 跳过: {exc}', flush=True)
     return actions

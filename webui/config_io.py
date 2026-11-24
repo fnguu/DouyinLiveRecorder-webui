@@ -61,6 +61,40 @@ def get_value(section: str, key: str, default: str = '', path: str = CONFIG_FILE
     return data.get(section, {}).get(key, default)
 
 
+def dedupe_lines(lines: list) -> tuple:
+    """同一节里同一个键出现多次时只留一条：位置取第一处，值取最后一处。
+
+    和 read_ini 的语义一致（后写的覆盖前面的），顺便把注释留在第一次出现的位置。
+    返回 (新行列表, 删掉的行数)。
+    """
+    first = {}
+    dropped = set()
+    section = None
+    for i, line in enumerate(lines):
+        m = _SECTION_RE.match(line)
+        if m:
+            section = m.group(1).strip()
+            continue
+        if section is None:
+            continue
+        kv = _KV_RE.match(line)
+        if not kv:
+            continue
+        slot = (section, kv.group(2).strip())
+        if slot not in first:
+            first[slot] = i
+            continue
+        head = _KV_RE.match(lines[first[slot]])
+        if head is None:  # pragma: no cover - 理论上不会发生
+            dropped.add(i)
+            continue
+        lines[first[slot]] = f'{head.group(1)}{head.group(2)}{head.group(3)}{kv.group(4)}'
+        dropped.add(i)
+    if not dropped:
+        return lines, 0
+    return [line for j, line in enumerate(lines) if j not in dropped], len(dropped)
+
+
 def update_values(items, path: str = CONFIG_FILE, create_backup: bool = True) -> list:
     """原地更新若干键值，返回真正被改动的键。
 
@@ -71,7 +105,24 @@ def update_values(items, path: str = CONFIG_FILE, create_backup: bool = True) ->
         if not os.path.exists(path):
             raise FileNotFoundError(path)
         lines = _read_lines(path)
-        pending = {(s, k): ('' if v is None else str(v)) for s, k, v in items}
+        # 先把重复键合并成一条再改：否则「改第一条、留最后一条」会让刚保存的值被
+        # 后面那条旧值顶掉（历史文件里这种重复不少，见 migrate.repair_equal_sign_keys）
+        lines, merged = dedupe_lines(lines)
+        if merged:
+            print(f'[webui] 配置里的重复键已合并 {merged} 行', flush=True)
+        pending = {}
+        invalid = []
+        for s, k, v in items:
+            key = ('' if k is None else str(k)).strip()
+            if not key or '=' in key or '[' in key or ']' in key:
+                # 键名里带等号/方括号的行会被 INI 从中间切开（键变成半截、值变成
+                # `自动) = 0`），写进去就是一条永远读不到、也永远改不掉的行。
+                # 历史版本因此每保存一次追加一行，把配置文件撑到了 4 万多行。
+                invalid.append(key)
+                continue
+            pending[(s, key)] = ('' if v is None else str(v))
+        if invalid:
+            print(f'[webui] 忽略非法配置键（键名不能含 = [ ]）: {", ".join(invalid)}', flush=True)
         touched = []
 
         section = None
@@ -127,7 +178,7 @@ def update_values(items, path: str = CONFIG_FILE, create_backup: bool = True) ->
             for idx in sorted(inserts, reverse=True):
                 lines[idx:idx] = inserts[idx]
 
-        if touched:
+        if touched or merged:
             if create_backup:
                 _backup(path)
             _write_lines(path, lines)

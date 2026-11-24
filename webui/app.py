@@ -22,7 +22,7 @@ from . import subtitle
 from . import version as webui_version
 from . import media
 from .config_io import read_ini
-from .migrate import repair_case_keys
+from .migrate import repair_config
 from .paths import BASE_DIR, CONFIG_FILE, STATIC_DIR, ensure_dirs, norm_url
 from .runtime import (assets_for_names, disk_info, files_for_names, read_runtime,
                        recent_files, tail_log, thread_map)
@@ -30,17 +30,17 @@ from .schema import build_schema, save_settings
 
 ensure_dirs()
 
-# 修一次被 configparser.write() 降级过的键名（B站 -> b站 这种），
-# 否则界面上会出现同一项显示两次
+# 修一次被 configparser.write() 降级过的键名（B站 -> b站 这种）、键名带等号的老配置项、
+# 以及重复键，否则界面上会出现同一项显示两次、改了也存不住
 try:
-    _fixed = repair_case_keys()
+    _fixed = repair_config()
     if _fixed:
         logger_text = ', '.join(
             f"{a.get('section')}: {a.get('removed') or a.get('renamed')} -> {a.get('kept') or a.get('to')}"
             for a in _fixed)
-        print(f'[webui] 已修复配置文件中的键名大小写重复: {logger_text}', flush=True)
+        print(f'[webui] 已修复配置文件: {logger_text}', flush=True)
 except Exception as _exc:  # pragma: no cover
-    print(f'[webui] 配置文件键名修复跳过: {_exc}', flush=True)
+    print(f'[webui] 配置文件修复跳过: {_exc}', flush=True)
 
 app = FastAPI(title='DouyinLiveRecorder WebUI', docs_url='/api/docs', openapi_url='/api/openapi.json')
 
