@@ -132,6 +132,7 @@ def repair_equal_sign_keys(path: str | None = None) -> list:
 
     section = None
     hits = {}
+    existing = {}
     for idx, line in enumerate(lines):
         s = line.strip()
         if s.startswith('[') and s.endswith(']'):
@@ -140,6 +141,10 @@ def repair_equal_sign_keys(path: str | None = None) -> list:
         if not section or not s or s.startswith(('#', ';')) or '=' not in s:
             continue
         key = s.rsplit(' = ', 1)[0].strip() if ' = ' in s else s.split('=', 1)[0].strip()
+        if key in LEGACY_EQUAL_KEYS.values() and (section, key) not in existing:
+            # 已经是新键名了（迁移过一次/用户新写进去的），以它为准
+            existing[(section, key)] = idx
+            continue
         want = LEGACY_EQUAL_KEYS.get(key)
         if not want:
             continue
@@ -155,6 +160,11 @@ def repair_equal_sign_keys(path: str | None = None) -> list:
     drop = set()
     actions = []
     for (sec, want), item in hits.items():
+        if (sec, want) in existing:
+            # 新键已经存在：老键的行全是重复，直接丢掉，别用老值覆盖当前值
+            drop.update(item['lines'])
+            actions.append({'section': sec, 'renamed': f'{want}（丢弃 {len(item["lines"])} 行老写法）', 'to': ''})
+            continue
         values = [v for v in item['values'] if v != '']
         # 0 是这一项的默认值（=自动），历史上每次保存都把界面上的 0 又追加一遍；
         # 非零值只可能来自用户手动设置，所以优先保留最后一个非零值
